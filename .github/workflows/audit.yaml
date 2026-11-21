@@ -1,0 +1,41 @@
+name: Coverage audit
+# Fails (=> e-mail to the owner) if any FutureEval/MiniBench question that opened in the last
+# 24 h still has no forecast from the bot an hour after opening. Read-only: no LLM calls.
+# Dispatched by the scheduler at the start of every ~5.5 h link; can also be run by hand.
+on:
+  workflow_dispatch:
+    inputs:
+      hours:
+        description: "Window in hours"
+        default: "24"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: futureeval-audit
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
+      # check_environment() requires at least one LLM key to be present; none is used here.
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      AUDIT_HOURS: ${{ inputs.hours || '24' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v10.3.0
+        with:
+          version: "0.13.1"
+      - name: Install locked dependencies
+        run: uv sync --locked
+      - name: Audit coverage
+        run: uv run python main.py --mode audit --hours "$AUDIT_HOURS"

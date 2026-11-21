@@ -181,6 +181,20 @@ class MainGuardTests(unittest.TestCase):
         self.assertAlmostEqual(sum(probs), 1.0)
         self.assertTrue(all(p >= 0.0098 for p in probs))
 
+    def test_find_missed(self):
+        from datetime import timedelta
+        from types import SimpleNamespace
+
+        now = datetime(2026, 11, 21, 6, 0, tzinfo=timezone.utc)
+        qs = [
+            SimpleNamespace(open_time=now - timedelta(hours=3), already_forecasted=False, page_url="https://m/1"),  # missed
+            SimpleNamespace(open_time=now - timedelta(hours=3), already_forecasted=True, page_url="https://m/2"),
+            SimpleNamespace(open_time=now - timedelta(minutes=20), already_forecasted=False, page_url="https://m/3"),  # too fresh
+            SimpleNamespace(open_time=now + timedelta(hours=1), already_forecasted=False, page_url="https://m/4"),  # upcoming
+            SimpleNamespace(open_time=None, already_forecasted=False, page_url="https://m/5"),
+        ]
+        self.assertEqual(self.main.find_missed(qs, now), ["https://m/1"])
+
     def test_guarded_bot_skips_question_when_budget_exhausted(self):
         from budget_guard import BudgetExceeded, BudgetGuard
 

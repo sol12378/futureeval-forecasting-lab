@@ -26,6 +26,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 350
     steps:
+      - name: Start a coverage audit (missed-question alarm)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run audit.yaml -R "$GITHUB_REPOSITORY" --ref main || echo "::warning::audit dispatch failed"
       - name: Dispatch the forecaster every 20 minutes (~5.5 hours)
         env:
           GH_TOKEN: ${{ github.token }}

@@ -6,7 +6,7 @@ import research_sources as research_sources_mod
 import logging
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Literal
 
 from budget_guard import (
@@ -46,6 +46,7 @@ from bot_helpers import (
 silence_noisy_dependencies()
 
 from forecasting_tools import (
+    ApiFilter,
     AskNewsSearcher,
     BinaryQuestion,
     ForecastBot,
@@ -952,6 +953,46 @@ def verify_on_metaculus(client, tournament_id, submitted_keys: set[str], run_sta
     return lines, ok
 
 
+def find_missed(questions, now: datetime, grace_minutes: int = 60) -> list[str]:
+    """Questions that opened at least `grace_minutes` ago and still carry no forecast from us."""
+    cutoff = now - timedelta(minutes=grace_minutes)
+    missed = []
+    for q in questions:
+        opened = getattr(q, "open_time", None)
+        if opened is None or opened > cutoff:
+            continue  # upcoming or too fresh for the 20-minute poller
+        if not q.already_forecasted:
+            missed.append(str(q.page_url))
+    return missed
+
+
+def audit(hours: int) -> int:
+    """Coverage audit: every question opened in the last `hours` must carry our forecast."""
+    check_environment(strict=True)
+    client = MetaculusClient()
+    now = datetime.now(timezone.utc)
+    lines, missed = [], []
+    for label, tournament_id in (("FutureEval", client.CURRENT_AI_COMPETITION_ID), ("MiniBench", client.CURRENT_MINIBENCH_ID)):
+        api_filter = ApiFilter(
+            allowed_tournaments=[tournament_id],
+            allowed_statuses=["open", "closed", "resolved"],
+            open_time_gt=now - timedelta(hours=hours),
+            group_question_mode="unpack_subquestions",
+        )
+        questions = asyncio.run(client.get_questions_matching_filter(api_filter))
+        mine = find_missed(questions, now)
+        forecasted = sum(1 for q in questions if q.already_forecasted)
+        lines.append(f"{label} ({tournament_id}): opened in last {hours}h={len(questions)}, forecasted={forecasted}, missed={len(mine)}")
+        missed += mine
+    if missed:
+        lines.append("MISSED (opened >60 min ago, no forecast): " + ", ".join(missed))
+    else:
+        lines.append("Coverage OK: no missed questions.")
+    print("\n".join(lines))
+    _write_step_summary(lines)
+    return EXIT_MISSED if missed else EXIT_OK
+
+
 def run(run_mode: str) -> int:
     check_environment(strict=True)
     live_enabled = os.getenv("ENABLE_LIVE_FORECASTS", "").strip().lower() == "true"
@@ -1134,9 +1175,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--mode",
         type=str,
-        choices=["tournament", "metaculus_cup", "test_questions"],
+        choices=["tournament", "metaculus_cup", "test_questions", "audit"],
         default="tournament",
         help="What to forecast on (default: tournament)",
     )
+    parser.add_argument("--hours", type=int, default=24, help="audit window in hours (audit mode)")
     args = parser.parse_args()
+    if args.mode == "audit":
+        sys.exit(audit(args.hours))
     sys.exit(run(args.mode))
