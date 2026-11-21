@@ -3,7 +3,7 @@ name: Forecast on new AI tournament questions
 on:
   workflow_dispatch:
   schedule:
-    - cron: "7,27,47 * * * *"
+    - cron: "3,23,43 * * * *"
 
 permissions:
   contents: read # the forecasting job is read-only; save_ledger below gets write
