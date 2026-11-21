@@ -34,7 +34,7 @@ FutureEval Fall 2026（project `33121` / `fall-futureeval-2026`）とMiniBench�
    - 使用中のキーが自分の上限の90%に達したら、クレジット切れのエラーを待たずに次のキーへ切り替えます
    - 登録済みのキーがすべて90%に達したら、新しいLLM処理を開始しません（終了コード3）
    - 全キー合計の70%以上：予測回数を1回に減らします（節約モード）
-   - 1回の実行の合計が `RUN_COST_CAP_USD`（既定$8）に達した時点で、以降の問題を止めます
+   - 1回の実行の合計が `RUN_COST_CAP_USD`（既定$30）に達した時点で、以降の問題を止めます
    - 料金を計算できないモデルは起動時に拒否します。料金不明の呼び出しは1回$0.50として保守的に計上します
    - 台帳が読めない場合は$0とみなさず、停止します（フェイルクローズ）
 5. **公開ログの保護**：本番モードでは、推論文と予測値をActionsログに出しません（コメントとしてMetaculusには投稿されます）。
@@ -58,7 +58,7 @@ GitHub Actionsのジョブが失敗すると、リポジトリ所有者にメー
 | Variable | `ENABLE_LIVE_FORECASTS` | テストに合格してから `true` にする |
 | Variable（任意） | `PREDICTIONS_PER_RESEARCH_REPORT` | 本番の予測回数。既定は3、最大5 |
 | Variable（任意） | `CLAUDE_MONTHLY_BUDGET_PER_KEY_USD` / `GPT_MONTHLY_BUDGET_PER_KEY_USD` | キー1本あたりの月上限。既定は200 / 100 |
-| Variable（任意） | `BUDGET_SOFT_RATIO` / `BUDGET_HARD_RATIO` / `RUN_COST_CAP_USD` | 既定は0.70 / 0.90 / 8 |
+| Variable（任意） | `BUDGET_SOFT_RATIO` / `BUDGET_HARD_RATIO` / `RUN_COST_CAP_USD` | 既定は0.70 / 0.90 / 30 |
 | Variable（任意） | `CLAUDE_MODEL` / `GPT_MODEL` | モデルの差し替え（litellmで料金を計算できるモデルに限る） |
 | Variable（任意） | `GPT_REASONING_EFFORT` | GPTの推論量。既定 `low`（none/low/medium/high/xhigh/max） |
 

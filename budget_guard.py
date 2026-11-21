@@ -41,7 +41,8 @@ DEFAULT_MONTHLY_BUDGET_USD = {"anthropic": 200.0, "openai": 100.0}
 BUDGET_ENV = {"anthropic": "CLAUDE_MONTHLY_BUDGET_PER_KEY_USD", "openai": "GPT_MONTHLY_BUDGET_PER_KEY_USD"}
 DEFAULT_SOFT_RATIO = 0.70
 DEFAULT_HARD_RATIO = 0.90
-DEFAULT_RUN_COST_CAP_USD = 8.0
+# The full ensemble costs ~$1/question; MiniBench can open ~10 questions at once.
+DEFAULT_RUN_COST_CAP_USD = 30.0
 # AskNews prepaid wallet ($15 granted by the owner). Pay-as-you-go: $0.025/credit (latest-news
 # search = 1 credit) plus returned tokens at $5-12/M, i.e. roughly $0.03-0.09 per search.
 # 150 searches keeps the worst case near $13.5 of the $15.

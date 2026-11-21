@@ -44,7 +44,7 @@ jobs:
       GPT_MONTHLY_BUDGET_PER_KEY_USD: ${{ vars.GPT_MONTHLY_BUDGET_PER_KEY_USD || '100' }}
       BUDGET_SOFT_RATIO: ${{ vars.BUDGET_SOFT_RATIO || '0.70' }}
       BUDGET_HARD_RATIO: ${{ vars.BUDGET_HARD_RATIO || '0.90' }}
-      RUN_COST_CAP_USD: ${{ vars.RUN_COST_CAP_USD || '8' }}
+      RUN_COST_CAP_USD: ${{ vars.RUN_COST_CAP_USD || '30' }}
       ASKNEWS_TOTAL_CALL_CAP: ${{ vars.ASKNEWS_TOTAL_CALL_CAP || '150' }} # ~$15 prepaid AskNews wallet
       LEDGER_DIR: ops_ledger
       REQUIRE_LEDGER: "true"
