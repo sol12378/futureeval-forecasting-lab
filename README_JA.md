@@ -5,8 +5,9 @@ FutureEval Fall 2026（project `33121` / `fall-futureeval-2026`）とMiniBench�
 人手を介さない完全自律運用で予測と根拠コメントを提出します。
 
 - 主予測：Claude Opus 5.5（`anthropic/claude-opus-5-5`）
-- 構造化出力の解析：GPT-6.2 Sol（`openai/gpt-6.2-sol`、推論effort=low）。OpenAIキーは1本目のクレジットが切れたら2本目に自動で切り替え
+- 構造化出力の解析：GPT-6.2 Sol（`openai/gpt-6.2-sol`、推論effort=low）
 - 最新ニュース：AskNews（未設定の場合はリサーチなし。LLMに架空の「Web検索」をさせることはしない）
+- APIキー：Claude・GPTとも、1本目のクレジットが切れたら2本目に自動で切り替え
 - 実行基盤：GitHub Actions（Publicリポジトリのため無料枠）、20分間隔
 
 ## 構成
@@ -24,7 +25,7 @@ FutureEval Fall 2026（project `33121` / `fall-futureeval-2026`）とMiniBench�
 
 ## 安全装置
 
-0. **OpenAIキーの切り替え**：1本目が「クレジット切れ」（`insufficient_quota` など）を返したときだけ2本目に切り替えます。レート制限や無効なキーでは切り替えず、失敗として通知します。月内は前回の実行が終わったキー枠から再開し、月が替わると1本目に戻ります。キー枠ごとの使用額は台帳の `openai_cost_by_key_slot` に記録されます（キーの値は記録しません）。
+0. **APIキーの切り替え（Claude・GPT共通）**：1本目が「クレジット切れ」を返したときだけ2本目に切り替えます。判定に使うのは、Claudeでは `billing_error` / credit balance is too low / `enforced_spend_limit_reached`、GPTでは `insufficient_quota` などです。レート制限や無効なキーでは切り替えず、失敗として通知します。月内は前回の実行が終わったキー枠から再開し、月が替わると1本目に戻ります。キー枠ごとの使用額は台帳の `cost_by_key_slot` に記録されます（キーの値は記録しません）。
 
 1. **本番提出のスイッチ**：リポジトリ変数 `ENABLE_LIVE_FORECASTS` が `true` でない限り、本番ジョブはスキップされます。`main.py` 側でも同じ値を確認します（二重チェック）。
 2. **重複提出の防止**（大会は1問につき1回のみ提出可）：Metaculus側の `already_forecasted` に加え、台帳に「提出済み」とある問題も除外します。両者が食い違った場合は提出せず、ジョブを失敗させて通知します（終了コード5）。
@@ -47,16 +48,27 @@ GitHub Actionsのジョブが失敗すると、リポジトリ所有者にメー
 | 種別 | 名前 | 内容 |
 |---|---|---|
 | Secret | `METACULUS_TOKEN` | Botアカウントのトークン |
-| Secret | `ANTHROPIC_API_KEY` | Claude用 |
+| Secret | `ANTHROPIC_API_KEY` | Claude用（1本目。最初に使う） |
+| Secret（任意） | `ANTHROPIC_API_KEY_2` | Claude用（2本目。1本目がクレジット切れになったときだけ使う） |
 | Secret | `OPENAI_API_KEY` | GPT用（1本目。最初に使う） |
 | Secret（任意） | `OPENAI_API_KEY_2` | GPT用（2本目。1本目がクレジット切れ `insufficient_quota` になったときだけ使う） |
-| Secret（任意・推奨） | `ASKNEWS_CLIENT_ID` / `ASKNEWS_SECRET` | AskNews（Bot参加者は無料枠あり） |
+| Secret（推奨） | `ASKNEWS_API_KEY` | AskNews（Metaculus公式手順の方式。Bot参加者は無料枠あり） |
+| Secret（代替） | `ASKNEWS_CLIENT_ID` / `ASKNEWS_SECRET` | AskNewsのOAuth方式。`ASKNEWS_API_KEY` と両方ある場合はこちらが優先 |
 | Variable | `ENABLE_LIVE_FORECASTS` | テストに合格してから `true` にする |
 | Variable（任意） | `PREDICTIONS_PER_RESEARCH_REPORT` | 本番の予測回数。既定は3、最大5 |
 | Variable（任意） | `CLAUDE_MONTHLY_BUDGET_USD` / `GPT_MONTHLY_BUDGET_USD` | 既定は200 / 100 |
 | Variable（任意） | `BUDGET_SOFT_RATIO` / `BUDGET_HARD_RATIO` / `RUN_COST_CAP_USD` | 既定は0.70 / 0.90 / 8 |
 | Variable（任意） | `CLAUDE_MODEL` / `GPT_MODEL` | モデルの差し替え（litellmで料金を計算できるモデルに限る） |
 | Variable（任意） | `GPT_REASONING_EFFORT` | GPTの推論量。既定 `low`（none/low/medium/high/xhigh/max） |
+
+## AskNews無料枠の受け取り方（Metaculus公式Resourcesページより）
+
+1. https://my.asknews.app で、**MetaculusのBotアカウントと同じメールアドレス**でアカウントを作成します。
+2. AskNewsのDiscordで @freqai に連絡するか、contact@asknews.app にメールで以下を送ります：Bot名、AskNewsに登録したメールアドレス、氏名、LinkedInプロフィール、所属（会社・研究室・個人）。
+3. AskNews側で無料枠（月1,000回、大会全体で4,000回、5M tokens）が有効化されたら、APIキーを発行して `ASKNEWS_API_KEY` に登録します。
+
+- 最新ニュース（48時間以内）の検索は1回、過去記事の検索は5回として数えます。このBotは最新ニュースを1問1回だけ使います。
+- アカウントは1人（1チーム）1つまでで、毎シーズン更新が必要です。大会以外の用途には使えません。
 
 ## 運用手順
 

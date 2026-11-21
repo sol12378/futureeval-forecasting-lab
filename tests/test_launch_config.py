@@ -32,6 +32,8 @@ class LaunchConfigTests(unittest.TestCase):
     def test_asknews_requires_both(self):
         self.assertFalse(has_asknews({"ASKNEWS_CLIENT_ID": "id"}))
         self.assertTrue(has_asknews({"ASKNEWS_CLIENT_ID": "id", "ASKNEWS_SECRET": "s"}))
+        self.assertTrue(has_asknews({"ASKNEWS_API_KEY": "k"}))
+        self.assertFalse(has_asknews({"ASKNEWS_API_KEY": "REPLACE_ME"}))
 
 
 class ModelSelectionTests(unittest.TestCase):

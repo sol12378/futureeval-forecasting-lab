@@ -29,8 +29,13 @@ def required_credentials_present(env: dict | None = None) -> dict[str, bool]:
 
 
 def has_asknews(env: dict | None = None) -> bool:
+    """AskNews is usable with ASKNEWS_API_KEY (official Metaculus setup) or CLIENT_ID + SECRET (OAuth)."""
     e = os.environ if env is None else env
-    return all(_env(e, k) and _env(e, k) not in _PLACEHOLDERS for k in ("ASKNEWS_CLIENT_ID", "ASKNEWS_SECRET"))
+
+    def real(k: str) -> bool:
+        return bool(_env(e, k)) and _env(e, k) not in _PLACEHOLDERS
+
+    return real("ASKNEWS_API_KEY") or (real("ASKNEWS_CLIENT_ID") and real("ASKNEWS_SECRET"))
 
 
 def config_counts(env: dict | None = None) -> tuple[int, int]:
@@ -74,7 +79,7 @@ def unpriced_models(models: tuple[str, ...]) -> list[str]:
     return missing
 
 
-def build_llm_config(env: dict | None = None, openai_key_pool=None):
+def build_llm_config(env: dict | None = None, key_pools: dict | None = None):
     e = os.environ if env is None else env
     missing = [k for k, ok in required_credentials_present(e).items() if not ok]
     if missing:
@@ -91,17 +96,22 @@ def build_llm_config(env: dict | None = None, openai_key_pool=None):
         allowed_tries=2,
         reasoning_effort=gpt_reasoning_effort(e),
     )
-    if openai_key_pool is not None:
-        from openai_keys import make_failover_llm
+    claude_kwargs = dict(model=claude_model, temperature=None, timeout=300, allowed_tries=2, max_tokens=16000)
+    pools = key_pools or {}
 
-        parser = make_failover_llm(openai_key_pool, **gpt_kwargs)
-        summarizer = make_failover_llm(openai_key_pool, **gpt_kwargs)
-    else:
-        parser = GeneralLlm(**gpt_kwargs)
-        summarizer = GeneralLlm(**gpt_kwargs)
+    def llm(provider: str, kwargs: dict):
+        # With a key pool, the LLM moves to the provider's 2nd key once the 1st is out of credit.
+        if provider in pools:
+            from api_keys import make_failover_llm
+
+            return make_failover_llm(pools[provider], **kwargs)
+        return GeneralLlm(**kwargs)
+
+    parser = llm("openai", gpt_kwargs)
+    summarizer = llm("openai", gpt_kwargs)
     return {
         # temperature=None: current Claude/GPT reasoning models reject sampling params.
-        "default": GeneralLlm(model=claude_model, temperature=None, timeout=300, allowed_tries=2, max_tokens=16000),
+        "default": llm("anthropic", claude_kwargs),
         "parser": parser,
         "summarizer": summarizer,
         # Without AskNews there is intentionally NO live research (no fake "web search").

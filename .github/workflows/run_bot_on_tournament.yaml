@@ -21,10 +21,12 @@ jobs:
     env:
       METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      ANTHROPIC_API_KEY_2: ${{ secrets.ANTHROPIC_API_KEY_2 }} # optional: used after key 1 runs out of credit
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OPENAI_API_KEY_2: ${{ secrets.OPENAI_API_KEY_2 }} # optional: used after key 1 runs out of credit
       ASKNEWS_CLIENT_ID: ${{ secrets.ASKNEWS_CLIENT_ID }}
       ASKNEWS_SECRET: ${{ secrets.ASKNEWS_SECRET }}
+      ASKNEWS_API_KEY: ${{ secrets.ASKNEWS_API_KEY }} # official Metaculus setup uses an API key
       ENABLE_LIVE_FORECASTS: ${{ vars.ENABLE_LIVE_FORECASTS }}
       CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL }}
       GPT_MODEL: ${{ vars.GPT_MODEL }}

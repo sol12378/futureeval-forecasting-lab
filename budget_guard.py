@@ -89,7 +89,7 @@ MODES = ("tournament", "test_questions", "metaculus_cup")
 QUESTION_STATUSES = ("submitted", "failed", "skipped_budget", "dry_run")
 MAX_RECORD_COST_USD = 1_000.0
 MAX_RECORD_BYTES = 1_000_000
-OPENAI_KEY_SLOTS = (1, 2)
+KEY_SLOTS = (1, 2)
 
 
 def _reject_constant(name: str) -> float:
@@ -121,14 +121,20 @@ def validate_record(data: Any) -> dict:
         raise LedgerError("cost_usd values must be finite numbers in 0..1000")
     if not _is_cost(data.get("unknown_provider_cost_usd", 0.0)):
         raise LedgerError("unknown_provider_cost_usd invalid")
-    slot = data.get("openai_key_slot", 1)
-    if not isinstance(slot, int) or isinstance(slot, bool) or slot not in OPENAI_KEY_SLOTS:
-        raise LedgerError("openai_key_slot invalid")
-    by_slot = data.get("openai_cost_by_key_slot", {})
-    if not isinstance(by_slot, dict) or not by_slot.keys() <= {str(s) for s in OPENAI_KEY_SLOTS}:
-        raise LedgerError("openai_cost_by_key_slot invalid")
-    if not all(_is_cost(v) for v in by_slot.values()):
-        raise LedgerError("openai_cost_by_key_slot values invalid")
+    slots = data.get("key_slot", {})
+    if not isinstance(slots, dict) or not slots.keys() <= set(PROVIDERS):
+        raise LedgerError("key_slot invalid")
+    for slot in slots.values():
+        if not isinstance(slot, int) or isinstance(slot, bool) or slot not in KEY_SLOTS:
+            raise LedgerError("key_slot value invalid")
+    by_slot = data.get("cost_by_key_slot", {})
+    if not isinstance(by_slot, dict) or not by_slot.keys() <= set(PROVIDERS):
+        raise LedgerError("cost_by_key_slot invalid")
+    for costs_for_provider in by_slot.values():
+        if not isinstance(costs_for_provider, dict) or not costs_for_provider.keys() <= {str(s) for s in KEY_SLOTS}:
+            raise LedgerError("cost_by_key_slot entry invalid")
+        if not all(_is_cost(v) for v in costs_for_provider.values()):
+            raise LedgerError("cost_by_key_slot values invalid")
     if data.get("mode") not in MODES:
         raise LedgerError("mode invalid")
     questions = data.get("questions", [])
@@ -187,10 +193,11 @@ def load_submitted_keys(ledger_dir: Path, months: Iterable[str]) -> set[str]:
     return keys
 
 
-def load_last_openai_slot(ledger_dir: Path, month: str) -> int:
-    """Key slot the previous run of this month ended on (credit resets are assumed monthly)."""
+def load_last_key_slots(ledger_dir: Path, month: str) -> dict[str, int]:
+    """Key slot per provider the previous run of this month ended on (slot 1 at month start)."""
     records = list(_iter_records(ledger_dir, month))  # sorted by timestamped filename
-    return int(records[-1].get("openai_key_slot", 1)) if records else 1
+    last = records[-1].get("key_slot", {}) if records else {}
+    return {p: int(last.get(p, 1)) for p in PROVIDERS}
 
 
 def question_key(question: Any) -> str:
@@ -210,8 +217,8 @@ class BudgetGuard:
     run_spend: dict[str, float] = field(default_factory=lambda: {p: 0.0 for p in PROVIDERS})
     unpriced_calls: int = 0
     unknown_provider_cost: float = 0.0
-    openai_cost_by_slot: dict[str, float] = field(default_factory=dict)
-    openai_slot: Any = None  # callable returning the active OpenAI key slot (1-based)
+    cost_by_slot: dict[str, dict[str, float]] = field(default_factory=lambda: {p: {} for p in PROVIDERS})
+    key_slot: Any = None  # callable(provider) -> active 1-based key slot
     questions: dict[str, dict] = field(default_factory=dict)
     started_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     _seen_call_ids: set = field(default_factory=set)
@@ -281,9 +288,11 @@ class BudgetGuard:
                 self.unknown_provider_cost += float(cost)
             else:
                 self.run_spend[provider] += float(cost)
-                if provider == "openai":
-                    slot = str(self.openai_slot() if callable(self.openai_slot) else 1)
-                    self.openai_cost_by_slot[slot] = self.openai_cost_by_slot.get(slot, 0.0) + float(cost)
+                slot = str(self._slot(provider))
+                self.cost_by_slot[provider][slot] = self.cost_by_slot[provider].get(slot, 0.0) + float(cost)
+
+    def _slot(self, provider: str) -> int:
+        return int(self.key_slot(provider)) if callable(self.key_slot) else 1
 
     def add_cost(self, provider: str, cost: float) -> None:
         with self._lock:
@@ -339,9 +348,9 @@ class BudgetGuard:
                 f"  {PROVIDER_LABEL[p]}: this run ${self.run_spend[p]:.4f}, month ${self.total_spend(p):.2f} / "
                 f"${self.budgets[p]:.2f} ({self.ratio(p):.1%})"
             )
-        if callable(self.openai_slot):
-            by_slot = ", ".join(f"key{k} ${v:.4f}" for k, v in sorted(self.openai_cost_by_slot.items())) or "no calls"
-            lines.append(f"  OpenAI key slot now: {self.openai_slot()} ({by_slot})")
+        for p in PROVIDERS:
+            by_slot = ", ".join(f"key{k} ${v:.4f}" for k, v in sorted(self.cost_by_slot[p].items())) or "no calls"
+            lines.append(f"  {PROVIDER_LABEL[p]} key slot now: {self._slot(p)} ({by_slot})")
         if self.unpriced_calls:
             lines.append(f"  WARNING: {self.unpriced_calls} unpriced call(s) charged conservatively")
         if self.unknown_provider_cost:
@@ -363,8 +372,8 @@ class BudgetGuard:
             "cost_usd": {p: round(self.run_spend[p], 6) for p in PROVIDERS},
             "unknown_provider_cost_usd": round(self.unknown_provider_cost, 6),
             "unpriced_calls": self.unpriced_calls,
-            "openai_key_slot": int(self.openai_slot()) if callable(self.openai_slot) else 1,
-            "openai_cost_by_key_slot": {k: round(v, 6) for k, v in self.openai_cost_by_slot.items()},
+            "key_slot": {p: self._slot(p) for p in PROVIDERS},
+            "cost_by_key_slot": {p: {k: round(v, 6) for k, v in self.cost_by_slot[p].items()} for p in PROVIDERS},
             "questions": list(self.questions.values()),
         }
         if extra:

@@ -20,7 +20,7 @@ def main() -> int:
         print("CONFIG_ERROR:", exc)
         return 2
     print(f"PREFLIGHT_OK: research_reports={research_count}, predictions_per_report={prediction_count}")
-    if not (os.environ.get("ASKNEWS_CLIENT_ID") and os.environ.get("ASKNEWS_SECRET")):
+    if not (os.environ.get("ASKNEWS_API_KEY") or (os.environ.get("ASKNEWS_CLIENT_ID") and os.environ.get("ASKNEWS_SECRET"))):
         print("WARNING: AskNews not configured; production runs have NO fresh external research. Configure it to improve time-sensitive forecasts.")
     return 0
 
