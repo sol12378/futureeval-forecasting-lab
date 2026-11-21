@@ -195,6 +195,26 @@ class MainGuardTests(unittest.TestCase):
         ]
         self.assertEqual(self.main.find_missed(qs, now), ["https://m/1"])
 
+    def test_wide_percentiles_with_fallback(self):
+        from types import SimpleNamespace
+
+        bot = self.main.GuardedBot(llms={"default": "x", "parser": "x", "summarizer": "x", "researcher": "no_research"})
+        q = SimpleNamespace(page_url="https://m/n", group_question_option=None)
+        prompt = "intro\n" + self.main.NUMERIC_BLOCK + "\nend"
+        seen = []
+
+        async def fake(_self, question, p):
+            msg = _self._create_single_distribution_parsing_message(question)
+            seen.append(("97.5" in p, "13 percentiles" in msg))
+            if "97.5" in p and len(seen) == 1:
+                raise ValueError("too far from bounds")
+            return "ok"
+
+        with patch.object(self.main.FallTemplateBot2026, "_numeric_prompt_to_forecast", fake):
+            self.assertEqual(asyncio.run(bot._numeric_prompt_to_forecast(q, prompt)), "ok")
+        self.assertEqual(seen, [(True, True), (False, False)])  # wide attempt, then 6-point fallback
+        self.assertIsNone(self.main._expand_percentile_block("changed template", self.main.NUMERIC_BLOCK, "XX"))
+
     def test_guarded_bot_skips_question_when_budget_exhausted(self):
         from budget_guard import BudgetExceeded, BudgetGuard
 

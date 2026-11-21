@@ -718,6 +718,41 @@ class FallTemplateBot2026(ForecastBot):
 _FORECASTER: contextvars.ContextVar[str] = contextvars.ContextVar("forecaster", default="claude")
 MC_PROBABILITY_FLOOR = 0.01
 
+# Distribution questions: the template asks for 6 percentiles (10..90). Past top bots asked for
+# more points incl. tails; forecasting-tools interpolates the CDF linearly between them and the
+# ensemble is aggregated as a point-wise median CDF.
+TEMPLATE_PERCENTILES = (0.10, 0.20, 0.40, 0.60, 0.80, 0.90)
+WIDE_PERCENTILES = (0.025, 0.05, 0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 0.95, 0.975)
+_PERCENTILE_SET: contextvars.ContextVar[tuple[float, ...]] = contextvars.ContextVar(
+    "percentile_set", default=TEMPLATE_PERCENTILES)
+NUMERIC_BLOCK = (
+    "Percentile 10: XX (lowest number value)\nPercentile 20: XX\nPercentile 40: XX\n"
+    "Percentile 60: XX\nPercentile 80: XX\nPercentile 90: XX (highest number value)"
+)
+DATE_BLOCK = (
+    "Percentile 10: YYYY-MM-DD (oldest date)\nPercentile 20: YYYY-MM-DD\nPercentile 40: YYYY-MM-DD\n"
+    "Percentile 60: YYYY-MM-DD\nPercentile 80: YYYY-MM-DD\nPercentile 90: YYYY-MM-DD (newest date)"
+)
+
+
+def _pct_label(p: float) -> str:
+    return f"{p * 100:g}"
+
+
+def _expand_percentile_block(prompt: str, block: str, fmt: str) -> str | None:
+    """Swap the template's 6-line answer format for the 13-point one; None if the template changed."""
+    if block not in prompt:
+        return None
+    lines = []
+    for i, p in enumerate(WIDE_PERCENTILES):
+        suffix = " (lowest)" if i == 0 else " (highest)" if i == len(WIDE_PERCENTILES) - 1 else ""
+        lines.append(f"Percentile {_pct_label(p)}: {fmt}{suffix}")
+    note = (
+        "\n(The 2.5th and 97.5th percentiles describe genuine tail risk: make them wide enough that "
+        "an outcome outside them would truly surprise you.)"
+    )
+    return prompt.replace(block, "\n".join(lines)) + note
+
 
 class GuardedBot(FallTemplateBot2026):
     """Template bot + per-provider budget guard + per-question ledger entries.
@@ -733,12 +768,37 @@ class GuardedBot(FallTemplateBot2026):
             self.budget_guard.assert_can_spend(what)
 
     def _create_single_distribution_parsing_message(self, question) -> str:
-        # Claude sometimes adds a median line; the two parser samples then disagree on whether to
-        # include it and the whole question fails. Pin the parser to the six requested percentiles.
+        # The two parser samples must agree, so pin them to exactly the requested percentile set
+        # (e.g. Claude sometimes adds an unrequested median line).
+        wanted = _PERCENTILE_SET.get()
+        listed = ", ".join(_pct_label(p) for p in wanted[:-1]) + f" and {_pct_label(wanted[-1])}"
         return super()._create_single_distribution_parsing_message(question) + (
-            "\n- Return exactly the six percentiles that were requested: 10, 20, 40, 60, 80 and 90."
-            " Ignore any other percentiles (for example a median / 50th percentile or 5th/95th) even if they appear in the text."
+            f"\n- Return exactly the {len(wanted)} percentiles that were requested: {listed}."
+            " Ignore any other percentiles even if they appear in the text."
         )
+
+    async def _distribution_with_tails(self, question, prompt: str, block: str, fmt: str, call):
+        """Ask for 13 percentiles (fatter, explicit tails); fall back to the template's 6 on failure."""
+        expanded = _expand_percentile_block(prompt, block, fmt)
+        if expanded is not None:
+            token = _PERCENTILE_SET.set(WIDE_PERCENTILES)
+            try:
+                return await call(question, expanded)
+            except BudgetExceeded:
+                raise
+            except Exception as exc:  # noqa: BLE001 - retry with the proven 6-point prompt
+                logger.warning("13-percentile forecast failed for %s (%s); retrying with 6", question.page_url, type(exc).__name__)
+            finally:
+                _PERCENTILE_SET.reset(token)
+        return await call(question, prompt)
+
+    async def _numeric_prompt_to_forecast(self, question, prompt):
+        return await self._distribution_with_tails(
+            question, prompt, NUMERIC_BLOCK, "XX", super()._numeric_prompt_to_forecast)
+
+    async def _date_prompt_to_forecast(self, question, prompt):
+        return await self._distribution_with_tails(
+            question, prompt, DATE_BLOCK, "YYYY-MM-DD", super()._date_prompt_to_forecast)
 
     # ------------------------------------------------------------------ research
     research_sources: tuple[str, ...] = ("asknews",)
