@@ -217,6 +217,23 @@ class BudgetGuardTests(unittest.TestCase):
         with self.assertRaises(LedgerError):
             self.guard()
 
+    def test_unequal_key_budgets(self):
+        from api_keys import KeyPool
+
+        g = self.guard(CLAUDE_MONTHLY_BUDGET_PER_KEY_USD="400,200", GPT_MONTHLY_BUDGET_PER_KEY_USD="180, 100")
+        self.assertEqual(g.budgets, {"anthropic": (400.0, 200.0), "openai": (180.0, 100.0)})
+        pools = {"anthropic": KeyPool("anthropic", {"ANTHROPIC_API_KEY": "a1", "ANTHROPIC_API_KEY_2": "a2"}),
+                 "openai": KeyPool("openai", {"OPENAI_API_KEY": "o1", "OPENAI_API_KEY_2": "o2"})}
+        with patch.dict(os.environ, {}):
+            g.attach_key_pools(pools)
+            self.assertEqual((g.capacity("anthropic"), g.capacity("openai")), (600.0, 280.0))
+            g.add_cost("anthropic", 361.0)  # key 1 at 90.25% of $400 -> rotate
+            g.assert_can_spend()
+            self.assertEqual(pools["anthropic"].slot, 2)
+        for bad in ("1,2,3", "abc", "-5", "nan"):
+            with self.assertRaises(ValueError, msg=bad):
+                self.guard(GPT_MONTHLY_BUDGET_PER_KEY_USD=bad)
+
     def test_previous_month(self):
         self.assertEqual(previous_month("2026-01"), "2025-12")
         self.assertEqual(previous_month("2026-11"), "2026-10")

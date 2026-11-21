@@ -82,6 +82,26 @@ def _env_float(env: Mapping[str, str], name: str, default: float, low: float, hi
     return value
 
 
+def _env_key_budgets(env: Mapping[str, str], name: str, default: float) -> tuple[float, ...]:
+    """'400,200' -> key 1 $400, key 2 $200; a single value applies to every key."""
+    raw = str(env.get(name, "") or "").strip()
+    if not raw:
+        return tuple(default for _ in KEY_SLOTS)
+    parts = [part.strip() for part in raw.split(",")]
+    if len(parts) not in (1, len(KEY_SLOTS)):
+        raise ValueError(f"{name} must be one number or {len(KEY_SLOTS)} comma-separated numbers")
+    values = []
+    for part in parts:
+        try:
+            value = float(part)
+        except ValueError as exc:
+            raise ValueError(f"{name} must contain numbers") from exc
+        if not (math.isfinite(value) and 0.0 <= value <= 10_000.0):
+            raise ValueError(f"{name} values must be within 0..10000")
+        values.append(value)
+    return tuple(values * len(KEY_SLOTS)) if len(values) == 1 else tuple(values)
+
+
 def current_month(now: datetime | None = None) -> str:
     return (now or datetime.now(timezone.utc)).strftime("%Y-%m")
 
@@ -243,7 +263,7 @@ class BudgetGuard:
     ledger_dir: Path
     mode: str
     month: str
-    budgets: dict[str, float]  # per key
+    budgets: dict[str, tuple[float, ...]]  # monthly budget of key 1, key 2
     month_spend: dict[str, float]
     month_slot_spend: dict[str, dict[str, float]] = field(default_factory=lambda: {p: {} for p in PROVIDERS})
     soft_ratio: float = DEFAULT_SOFT_RATIO
@@ -271,9 +291,7 @@ class BudgetGuard:
         e = os.environ if env is None else env
         ledger_dir = Path(str(e.get("LEDGER_DIR") or "ops_ledger"))
         month = current_month(now)
-        budgets = {
-            p: _env_float(e, BUDGET_ENV[p], DEFAULT_MONTHLY_BUDGET_USD[p], 0.0, 10_000.0) for p in PROVIDERS
-        }
+        budgets = {p: _env_key_budgets(e, BUDGET_ENV[p], DEFAULT_MONTHLY_BUDGET_USD[p]) for p in PROVIDERS}
         soft = _env_float(e, "BUDGET_SOFT_RATIO", DEFAULT_SOFT_RATIO, 0.05, 1.0)
         hard = _env_float(e, "BUDGET_HARD_RATIO", DEFAULT_HARD_RATIO, 0.05, 1.0)
         if soft > hard:
@@ -355,14 +373,17 @@ class BudgetGuard:
         return self.month_spend[provider] + self.run_spend[provider]
 
     def capacity(self, provider: str) -> float:
-        return self.budgets[provider] * self.key_counts[provider]
+        return sum(self.budgets[provider][: self.key_counts[provider]])
+
+    def key_budget(self, provider: str, slot: int) -> float:
+        return self.budgets[provider][slot - 1]
 
     def slot_spend(self, provider: str, slot: int) -> float:
         key = str(slot)
         return self.month_slot_spend[provider].get(key, 0.0) + self.cost_by_slot[provider].get(key, 0.0)
 
     def slot_ratio(self, provider: str, slot: int) -> float:
-        budget = self.budgets[provider]
+        budget = self.key_budget(provider, slot)
         spent = self.slot_spend(provider, slot)
         if budget <= 0 or not math.isfinite(spent):
             return float("inf")  # fail closed
@@ -409,7 +430,8 @@ class BudgetGuard:
             if self.provider_exhausted(provider) or self.slot_ratio(provider, self._slot(provider)) >= self.hard_ratio:
                 raise BudgetExceeded(
                     f"{PROVIDER_LABEL[provider]} keys reached {self.hard_ratio:.0%} of their "
-                    f"${self.budgets[provider]:.2f}/key budget (month ${self.total_spend(provider):.2f}); refusing {what}"
+                    f"per-key budgets {self.budgets[provider][: self.key_counts[provider]]} "
+                    f"(month ${self.total_spend(provider):.2f}); refusing {what}"
                 )
         if self.run_total() >= self.run_cost_cap:
             raise BudgetExceeded(f"Run cost ${self.run_total():.2f} reached cap ${self.run_cost_cap:.2f}; refusing {what}")
@@ -442,10 +464,10 @@ class BudgetGuard:
         for p in PROVIDERS:
             lines.append(
                 f"  {PROVIDER_LABEL[p]}: this run ${self.run_spend[p]:.4f}, month ${self.total_spend(p):.2f} / "
-                f"${self.capacity(p):.2f} ({self.key_counts[p]} key(s) x ${self.budgets[p]:.2f}, {self.ratio(p):.1%})"
+                f"${self.capacity(p):.2f} ({self.key_counts[p]} key(s), {self.ratio(p):.1%})"
             )
             per_key = ", ".join(
-                f"key{s} ${self.slot_spend(p, s):.2f} ({self.slot_ratio(p, s):.0%})"
+                f"key{s} ${self.slot_spend(p, s):.2f}/${self.key_budget(p, s):.0f} ({self.slot_ratio(p, s):.0%})"
                 for s in range(1, self.key_counts[p] + 1)
             )
             lines.append(f"    active key {self._slot(p)}; month per key: {per_key}")
