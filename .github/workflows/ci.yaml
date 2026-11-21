@@ -1,0 +1,28 @@
+name: CI
+# Offline checks only: no secrets, no LLM calls, no Metaculus calls.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v10.3.0
+        with:
+          version: "0.13.1"
+      - name: Install locked dependencies
+        run: uv sync --locked
+      - name: Unit tests
+        run: uv run python -m unittest discover -s tests -v
+      - name: Compile
+        run: uv run python -m compileall -q main.py forecast_config.py budget_guard.py scripts

@@ -1,10 +1,27 @@
 import argparse
 import asyncio
 import logging
+import os
+import sys
 from datetime import datetime, timezone
 from typing import Literal
 
-from forecast_config import build_llm_config, config_counts
+from budget_guard import (
+    BudgetExceeded,
+    BudgetGuard,
+    LedgerError,
+    current_month,
+    load_submitted_keys,
+    previous_month,
+    question_key,
+)
+from forecast_config import (
+    build_llm_config,
+    config_counts,
+    has_asknews,
+    model_names,
+    unpriced_models,
+)
 
 import dotenv
 
@@ -685,32 +702,122 @@ class FallTemplateBot2026(ForecastBot):
         )
 
 
-if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    )
 
-    parser = argparse.ArgumentParser(description="Run the template forecasting bot")
-    parser.add_argument(
-        "--mode",
-        type=str,
-        choices=["tournament", "metaculus_cup", "test_questions"],
-        default="tournament",
-        help="What to forecast on (default: tournament)",
-    )
-    args = parser.parse_args()
-    run_mode: Literal["tournament", "metaculus_cup", "test_questions"] = args.mode
 
+class GuardedBot(FallTemplateBot2026):
+    """Template bot + per-provider budget guard + per-question ledger entries.
+
+    The forecasting logic is inherited unchanged from FallTemplateBot2026 so that
+    upstream template updates stay easy to merge.
+    """
+
+    budget_guard: BudgetGuard | None = None
+
+    def _guard(self, what: str) -> None:
+        if self.budget_guard is not None:
+            self.budget_guard.assert_can_spend(what)
+
+    async def run_research(self, question: MetaculusQuestion) -> str:
+        self._guard(f"research for {question.page_url}")
+        return await super().run_research(question)
+
+    async def _make_prediction(self, question: MetaculusQuestion, research: str):
+        self._guard(f"prediction for {question.page_url}")
+        return await super()._make_prediction(question, research)
+
+    async def _run_individual_question(self, question: MetaculusQuestion):
+        guard = self.budget_guard
+        key = question_key(question)
+        try:
+            self._guard(f"question {question.page_url}")
+        except BudgetExceeded as exc:
+            if guard is not None:
+                guard.note_question(key, question.page_url, "skipped_budget", str(exc))
+            raise
+        try:
+            report = await super()._run_individual_question(question)
+        except Exception as exc:
+            if guard is not None:
+                guard.note_question(key, question.page_url, "failed", f"{type(exc).__name__}: {exc}")
+            raise
+        if guard is not None:
+            status = "submitted" if self.publish_reports_to_metaculus else "dry_run"
+            guard.note_question(key, question.page_url, status)
+        return report
+
+
+TOURNAMENT_URLS = {
+    "tournament": "https://www.metaculus.com/tournament/fall-futureeval-2026/",
+    "metaculus_cup": "https://www.metaculus.com/tournament/metaculus-cup-fall-2026/",
+    "test_questions": "https://www.metaculus.com/tournament/bot-testing-area/",
+}
+
+# Exit codes (non-zero makes the GitHub Actions run fail and email the owner).
+EXIT_OK = 0
+EXIT_QUESTION_ERRORS = 1
+EXIT_CONFIG = 2
+EXIT_BUDGET = 3
+EXIT_MISSED = 4
+EXIT_LEDGER_MISMATCH = 5
+
+
+def _write_step_summary(lines: list[str]) -> None:
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not path:
+        return
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write("```\n" + "\n".join(lines) + "\n```\n")
+
+
+def run(run_mode: str) -> int:
     check_environment(strict=True)
+    live_enabled = os.getenv("ENABLE_LIVE_FORECASTS", "").strip().lower() == "true"
+    if run_mode == "metaculus_cup" and os.getenv("ALLOW_METACULUS_CUP", "").lower() != "true":
+        print("Metaculus Cup is out of scope for this project (set ALLOW_METACULUS_CUP=true to override).")
+        return EXIT_OK
+    if run_mode in ("tournament", "metaculus_cup") and not live_enabled:
+        print("ENABLE_LIVE_FORECASTS is not 'true': live tournament submission is disabled. No LLM calls made.")
+        return EXIT_OK
+
+    claude_model, gpt_model = model_names()
+    missing_prices = unpriced_models((claude_model, gpt_model))
+    if missing_prices:
+        print(f"CONFIG_ERROR: litellm cannot price {missing_prices}; budget guard would be blind. Refusing to run.")
+        return EXIT_CONFIG
+    try:
+        guard = BudgetGuard.from_env(run_mode)
+        research_count, prediction_count = config_counts()
+    except (LedgerError, ValueError) as exc:
+        print(f"BUDGET_CONFIG_ERROR: {exc}")
+        return EXIT_CONFIG
+
+    print("\n".join(guard.summary_lines()))
+    level = guard.level()
+    if level == "hard":
+        print("BUDGET_HARD_STOP: monthly budget threshold reached; not starting any LLM work.")
+        guard.write_record({"refused": "budget_hard_stop"})
+        _write_step_summary(guard.summary_lines() + ["BUDGET_HARD_STOP"])
+        return EXIT_BUDGET
+    if level == "soft" and prediction_count > 1:
+        print(f"BUDGET_SOFT_LIMIT: reducing predictions per research report {prediction_count} -> 1")
+        prediction_count = 1
+    guard.install()
+
+    if run_mode != "test_questions" and os.getenv("LOG_FORECAST_DETAILS", "").lower() != "true":
+        # Actions logs of a public repo are public; keep open-question reasoning/predictions out of them.
+        # The reasoning is still posted to Metaculus as the bot's (private) comment.
+        for name in ("__main__", "forecasting_tools"):
+            logging.getLogger(name).setLevel(logging.WARNING)
+
     publish_to_metaculus = True
     print_startup_banner(run_mode, will_publish=publish_to_metaculus)
+    print(
+        f"Models: forecaster={claude_model}, parser/summarizer={gpt_model}, "
+        f"research={'AskNews' if has_asknews() else 'NONE (AskNews not configured)'}, "
+        f"research_reports={research_count}, predictions_per_report={prediction_count}"
+    )
 
-    # Configure the bot. The `llms=` block below is commented out to use
-    # whichever default models forecasting-tools picks based on your env vars;
-    # uncomment and edit to pin specific models.
-    research_count, prediction_count = config_counts()
-    template_bot = FallTemplateBot2026(
+    bot = GuardedBot(
         research_reports_per_question=research_count,
         predictions_per_research_report=prediction_count,
         use_research_summary_to_forecast=False,
@@ -720,57 +827,102 @@ if __name__ == "__main__":
         extra_metadata_in_explanation=True,
         llms=build_llm_config(),
     )
+    bot.budget_guard = guard
 
-    # Per-mode tournament URL shown in the summary banner footer. These
-    # piggyback on the forecasting_tools SDK constants and need updating
-    # whenever those rotate seasons.
-    TOURNAMENT_URLS = {
-        "tournament": "https://www.metaculus.com/tournament/fall-futureeval-2026/",
-        "metaculus_cup": "https://www.metaculus.com/tournament/metaculus-cup-fall-2026/",
-        "test_questions": "https://www.metaculus.com/tournament/bot-testing-area/",
-    }
-
-    # Dispatch on mode. Each branch produces a list of ForecastReport (or
-    # exceptions, since return_exceptions=True) which then flows into the
-    # summary printers below.
     client = MetaculusClient()
-    if run_mode == "tournament":
-        seasonal_tournament_reports = asyncio.run(
-            template_bot.forecast_on_tournament(
-                client.CURRENT_AI_COMPETITION_ID, return_exceptions=True
+    forecast_reports: list = []
+    exit_code = EXIT_OK
+    notes: list[str] = []
+    try:
+        if run_mode == "tournament":
+            submitted = load_submitted_keys(guard.ledger_dir, [guard.month, previous_month(guard.month)])
+            targets = [
+                ("FutureEval", client.CURRENT_AI_COMPETITION_ID),
+                ("MiniBench", client.CURRENT_MINIBENCH_ID),
+            ]
+            expected: dict[str, str] = {}
+            for label, tournament_id in targets:
+                questions = client.get_all_open_questions_from_tournament(tournament_id)
+                done = [q for q in questions if q.already_forecasted]
+                blocked = [q for q in questions if not q.already_forecasted and question_key(q) in submitted]
+                fresh = [q for q in questions if not q.already_forecasted and question_key(q) not in submitted]
+                notes.append(
+                    f"{label} ({tournament_id}): open={len(questions)}, already_forecasted={len(done)}, "
+                    f"to_forecast={len(fresh)}, ledger_blocked={len(blocked)}"
+                )
+                if blocked:
+                    # Ledger says we submitted but Metaculus shows no forecast: never risk a duplicate.
+                    notes.append("LEDGER_MISMATCH: " + ", ".join(str(q.page_url) for q in blocked))
+                    exit_code = max(exit_code, EXIT_LEDGER_MISMATCH)
+                for q in fresh:
+                    expected[question_key(q)] = str(q.page_url)
+                if fresh:
+                    forecast_reports += asyncio.run(bot.forecast_questions(fresh, return_exceptions=True))
+            if expected:
+                still_missing = []
+                for _label, tournament_id in targets:
+                    for q in client.get_all_open_questions_from_tournament(tournament_id):
+                        if question_key(q) in expected and not q.already_forecasted:
+                            still_missing.append(str(q.page_url))
+                if still_missing:
+                    notes.append("MISSED_SUBMISSIONS (still open, no forecast): " + ", ".join(still_missing))
+                    exit_code = max(exit_code, EXIT_MISSED)
+                else:
+                    notes.append(f"Post-check OK: all {len(expected)} targeted question(s) now show a forecast.")
+            else:
+                notes.append("No new questions to forecast (monitoring OK).")
+        elif run_mode == "test_questions":
+            # Bot Testing Area allows resubmission; always forecast every open test question.
+            bot.skip_previously_forecasted_questions = False
+            questions = client.get_all_open_questions_from_tournament("bot-testing-area")
+            notes.append(f"Bot Testing Area: open={len(questions)}")
+            forecast_reports = asyncio.run(bot.forecast_questions(questions, return_exceptions=True))
+        elif run_mode == "metaculus_cup":
+            bot.skip_previously_forecasted_questions = False
+            forecast_reports = asyncio.run(
+                bot.forecast_on_tournament(client.CURRENT_METACULUS_CUP_ID, return_exceptions=True)
             )
+    finally:
+        statuses = [q["status"] for q in guard.questions.values()]
+        if any(s == "skipped_budget" for s in statuses):
+            exit_code = max(exit_code, EXIT_BUDGET)
+        idle = run_mode == "tournament" and not guard.questions and guard.run_total() == 0 and exit_code == EXIT_OK
+        record_path = "(idle run: no record written)" if idle else guard.write_record(
+            {
+                "models": {"forecaster": claude_model, "parser": gpt_model},
+                "asknews": has_asknews(),
+                "predictions_per_report": prediction_count,
+                "notes": notes,
+            }
         )
-        minibench_reports = asyncio.run(
-            template_bot.forecast_on_tournament(
-                client.CURRENT_MINIBENCH_ID, return_exceptions=True
-            )
-        )
-        forecast_reports = seasonal_tournament_reports + minibench_reports
-    elif run_mode == "metaculus_cup":
-        # The Metaculus Cup may be uninitialized near the start of a season
-        # (Jan/May/Sep). MetaculusClient.ACX_2025_TOURNAMENT = 32564 and
-        # MetaculusClient.AI_2027_TOURNAMENT_ID = "ai-2027" are also valid
-        # targets here.
-        template_bot.skip_previously_forecasted_questions = False
-        forecast_reports = asyncio.run(
-            template_bot.forecast_on_tournament(
-                client.CURRENT_METACULUS_CUP_ID, return_exceptions=True
-            )
-        )
-    elif run_mode == "test_questions":
-        # The bot-testing-area tournament contains all question types and is
-        # the recommended target for smoke-testing your bot.
-        # https://www.metaculus.com/tournament/bot-testing-area/
-        template_bot.skip_previously_forecasted_questions = False
-        forecast_reports = asyncio.run(
-            template_bot.forecast_on_tournament(
-                "bot-testing-area", return_exceptions=True
-            )
-        )
+        lines = notes + guard.summary_lines() + [f"Ledger record: {record_path}"]
+        print("\n".join(lines))
+        _write_step_summary(lines)
 
-    template_bot.log_report_summary(forecast_reports)
     print_run_summary_banner(
         forecast_reports,
         will_publish=publish_to_metaculus,
         tournament_url=TOURNAMENT_URLS.get(run_mode),
     )
+    if any(isinstance(r, BaseException) for r in forecast_reports):
+        exit_code = max(exit_code, EXIT_QUESTION_ERRORS)
+    if run_mode == "test_questions":
+        bot.log_report_summary(forecast_reports, raise_errors=False)
+    return exit_code
+
+
+if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
+    parser = argparse.ArgumentParser(description="Run the FutureEval forecasting bot")
+    parser.add_argument(
+        "--mode",
+        type=str,
+        choices=["tournament", "metaculus_cup", "test_questions"],
+        default="tournament",
+        help="What to forecast on (default: tournament)",
+    )
+    args = parser.parse_args()
+    sys.exit(run(args.mode))

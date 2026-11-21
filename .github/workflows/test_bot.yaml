@@ -1,12 +1,19 @@
 name: Test Bot
+# Forecasts every open question in the unscored Bot Testing Area (resubmission allowed there).
 on:
   workflow_dispatch:
+    inputs:
+      predictions:
+        description: "Predictions per question (1-5)"
+        default: "1"
 
 permissions:
-  contents: read
+  contents: write # only to append spend records to the ops-ledger branch
+
 concurrency:
   group: futureeval-test
   cancel-in-progress: false
+
 jobs:
   forecast_job:
     runs-on: ubuntu-latest
@@ -20,7 +27,14 @@ jobs:
       CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL }}
       GPT_MODEL: ${{ vars.GPT_MODEL }}
       RESEARCH_REPORTS_PER_QUESTION: "1"
-      PREDICTIONS_PER_RESEARCH_REPORT: "1"
+      PREDICTIONS_PER_RESEARCH_REPORT: ${{ inputs.predictions || '1' }}
+      CLAUDE_MONTHLY_BUDGET_USD: ${{ vars.CLAUDE_MONTHLY_BUDGET_USD || '200' }}
+      GPT_MONTHLY_BUDGET_USD: ${{ vars.GPT_MONTHLY_BUDGET_USD || '100' }}
+      BUDGET_SOFT_RATIO: ${{ vars.BUDGET_SOFT_RATIO || '0.70' }}
+      BUDGET_HARD_RATIO: ${{ vars.BUDGET_HARD_RATIO || '0.90' }}
+      RUN_COST_CAP_USD: ${{ vars.RUN_COST_CAP_USD || '8' }}
+      LEDGER_DIR: ops_ledger
+      REQUIRE_LEDGER: "true"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -31,7 +45,12 @@ jobs:
           version: "0.13.1"
       - name: Check API configuration
         run: python scripts/preflight.py
+      - name: Load spend ledger
+        run: bash scripts/ledger.sh pull
       - name: Install upstream-locked dependencies
         run: uv sync --locked
       - name: Forecast in Bot Testing Area (test only)
         run: uv run python main.py --mode test_questions
+      - name: Save spend ledger
+        if: always()
+        run: bash scripts/ledger.sh push

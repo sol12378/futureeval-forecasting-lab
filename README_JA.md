@@ -1,107 +1,70 @@
-# FutureEval + MiniBench Launch Kit (2026-11-20)
+# FutureEval Forecasting Lab（Fall 2026 + MiniBench）
 
-## 重要：現時点の状態
+Metaculus公式テンプレート [metac-bot-template](https://github.com/Metaculus/metac-bot-template) のPublic Forkです。
+FutureEval Fall 2026（project `33121` / `fall-futureeval-2026`）とMiniBench（`minibench`）に、
+人手を介さない完全自律運用で予測と根拠コメントを提出します。
 
-これは **Metaculus公式テンプレートに重ねるパッチ** です。GitHubにリポジトリを自動作成したり、API Secretsを設定したものではありません。**実際の大会提出はまだ行われていません**。
+- 主予測：Claude Opus 5.5（`anthropic/claude-opus-5-5`）
+- 構造化出力の解析・要約：GPT-5.4 mini（`openai/gpt-5.4-mini`）
+- 最新ニュース：AskNews（未設定の場合はリサーチなし。LLMに架空の「Web検索」をさせることはしない）
+- 実行基盤：GitHub Actions（Publicリポジトリのため無料枠）、20分間隔
 
-- 公式テンプレート：https://github.com/Metaculus/metac-bot-template
-- Metaculus参加：https://www.metaculus.com/futureeval/participate/
-- 大会ルール：https://www.metaculus.com/notebooks/28751/futureeval-competition-rules/
+## 構成
 
-## A. アカウントの準備（本人操作）
-
-1. Metaculusで個人アカウントを作成。「My Forecasting Bots」で **Primary Botを1体**作り、`METACULUS_TOKEN` を控える。
-2. 参加者フォームの必須項目を入力し、競技ルールを確認する。
-3. Anthropic Console と OpenAI Platform にアクセス。毎月の支給クレジットが **通常のAPI呼び出しに利用できる** ことを確認する。クレジットの失効日、対象プロジェクト、追加課金の設定を確認する。
-4. APIキーを発行する。**キーをChatGPTやリポジトリ、Issue、Actionsログに貼らない。**
-5. できればAskNewsも登録し、`ASKNEWS_CLIENT_ID` と `ASKNEWS_SECRET` を取得する。AskNewsなしではリアルタイム検索なしで動作するため、予測精度への悪影響を想定する。
-
-## B. GitHubのForkを作る（本人操作）
-
-1. https://github.com/Metaculus/metac-bot-template にアクセスして **Fork** を押す。
-2. Owner=`sol12378`、リポジトリ名は例 `futureeval-forecasting-lab`、**Public** として作成する。
-3. 自分のPCでクローンする（以下は名前を上記とした例）。
-
-```bash
-git clone https://github.com/sol12378/futureeval-forecasting-lab.git
-cd futureeval-forecasting-lab
-```
-
-4. このZIPの内容を **forkのルート**に展開する。`main.py` は元の公式版が存在するままにする。
-5. 次のコマンドを実行する。
-
-```bash
-python3 scripts/prepare_fork.py
-python3 -m unittest discover -s tests -v
-python3 -m compileall -q main.py forecast_config.py scripts
-
-git add main.py forecast_config.py scripts .github/workflows README_JA.md tests .env.example.launchkit
-git commit -m "Configure Claude/GPT FutureEval and MiniBench dual-tournament bot"
-git push origin main
-```
-
-**注意**：公式テンプレートの更新で`prepare_fork.py`が停止した場合は無理に続行しない。差分を確認して再適用する。
-
-## C. GitHub Secretsを登録（本人操作）
-
-Forkの `Settings → Secrets and variables → Actions → Secrets → New repository secret` に以下を登録する。
-
-| Name | 内容 |
+| ファイル | 役割 |
 |---|---|
-| `METACULUS_TOKEN` | MetaculusのBotアカウント用トークン |
-| `ANTHROPIC_API_KEY` | Claude用APIキー |
-| `OPENAI_API_KEY` | GPT用APIキー |
-| `ASKNEWS_CLIENT_ID` | 任意・AskNews |
-| `ASKNEWS_SECRET` | 任意・AskNews |
+| `main.py` | 上流の `FallTemplateBot2026` を変更せずに継承した `GuardedBot`、実行モードの切り替え、提出後の検証 |
+| `forecast_config.py` | モデル選択・予測回数・Secretsの存在確認（値はログに出さない） |
+| `budget_guard.py` | プロバイダ別の月次予算ガードと、追記専用の費用台帳 |
+| `scripts/ledger.sh` | `ops-ledger` ブランチの台帳を取得・追記する |
+| `scripts/preflight.py` | 必須Secretsの有無を、高コストな処理の前に検査する |
+| `.github/workflows/run_bot_on_tournament.yaml` | 本番（`ENABLE_LIVE_FORECASTS=true` のときだけ動く） |
+| `.github/workflows/test_bot.yaml` | Bot Testing Area への手動テスト |
+| `.github/workflows/ci.yaml` | Secretsを使わないオフライン検査（単体テスト・コンパイル） |
 
-`Settings → Secrets and variables → Actions → Variables` の `ENABLE_LIVE_FORECASTS` は **最初は作らないか `false`** にする。`CLAUDE_MODEL`、`GPT_MODEL` は未設定であればコード内の既定モデルを使用する。
+## 安全装置
 
-**重要**：OpenAI/Anthropicのアカウント画面で、自動リチャージや過剰請求につながる設定を確認。無料クレジットだけを使う運用なら追加支出しないよう予算・アラートを設定する。このキットはAPIプロバイダーの残高を取得できないため、月額$200/$100の**厳密な金額制限は自動では保証できない**。
+1. **本番提出のスイッチ**：リポジトリ変数 `ENABLE_LIVE_FORECASTS` が `true` でない限り、本番ジョブはスキップされます。`main.py` 側でも同じ値を確認します（二重チェック）。
+2. **重複提出の防止**（大会は1問につき1回のみ提出可）：Metaculus側の `already_forecasted` に加え、台帳に「提出済み」とある問題も除外します。両者が食い違った場合は提出せず、ジョブを失敗させて通知します（終了コード5）。
+3. **提出漏れの検知**：実行後に大会を再取得し、対象にした問題がまだ予測なしで開いていれば失敗にします（終了コード4）。
+4. **予算**：月次の支出はプロバイダごとに台帳で合計します（月はUTCで区切ります）。
+   - 70%以上：予測回数を1回に減らします（節約モード）
+   - 90%以上：新しいLLM処理を開始しません（終了コード3）
+   - 1回の実行の合計が `RUN_COST_CAP_USD`（既定$8）に達した時点で、以降の問題を止めます
+   - 料金を計算できないモデルは起動時に拒否します。料金不明の呼び出しは1回$0.50として保守的に計上します
+   - 台帳が読めない場合は$0とみなさず、停止します（フェイルクローズ）
+5. **公開ログの保護**：本番モードでは、推論文と予測値をActionsログに出しません（コメントとしてMetaculusには投稿されます）。
+6. **Metaculus Cup**：対象外のため、`ALLOW_METACULUS_CUP=true` を設定しない限り何もしません。
 
-## D. テスト → 本番
+GitHub Actionsのジョブが失敗すると、リポジトリ所有者にメールで通知されます（GitHubの既定設定）。
 
-1. `Actions`タブでWorkflowを有効化する（Forkした場合は手動承認が必要なことがある）。
-2. `Test Bot` → `Run workflow`。`Bot Testing Area` への予測テスト。実際にBotアカウントへ切り替え、テスト予測の反映を確認。
-3. テストが成功した場合のみ `Variables → ENABLE_LIVE_FORECASTS = true` を登録する。
-4. `Forecast on new AI tournament questions`を**手動で1回実行**し、ForecastのログがFall 2026とMiniBenchの両方を対象にしていることを確認する（その瞬間に新規問題がなければ `No new questions` は正常）。
-5. その後は20分おきに自動実行する。スケジュールはGitHub Actionsの混雑等による遅延・スキップがあり得る。
-6. テスト実行の終了ログとBotアカウントの実際の投稿を照合する。「Run success」だけでは予測提出成功を意味しない。
+## 本人による設定（Secrets / Variables）
 
-## E. 初期の費用・研究方針
+`Settings → Secrets and variables → Actions`
 
-- **初期版**：Claude Sonnet 5を主予測に使用、GPT-5.4 miniを出力解析・要約に使用。各問題のリサーチ1回・予測1回。
-- **注意**：これは独立したClaude/GPTアンサンブルではない。両モデルの独立予測比較は、安定稼働後の別フェーズで実装する。
-- AskNews未設定：研究取得なし。最新ニュースに乏しいためスコア評価に注意。
-- 利用枠：Claude $200/月、GPT $100/月はAPI提供元のクレジット条件が一致する場合の **上限目安** であり、この設定がクレジット残量を管理するわけではない。
-- 初回は `RESEARCH_REPORTS_PER_QUESTION=1`、`PREDICTIONS_PER_RESEARCH_REPORT=1` でコスト最小化。連続運用で利用費を実測してから増やす。
+| 種別 | 名前 | 内容 |
+|---|---|---|
+| Secret | `METACULUS_TOKEN` | Botアカウントのトークン |
+| Secret | `ANTHROPIC_API_KEY` | Claude用 |
+| Secret | `OPENAI_API_KEY` | GPT用 |
+| Secret（任意・推奨） | `ASKNEWS_CLIENT_ID` / `ASKNEWS_SECRET` | AskNews（Bot参加者は無料枠あり） |
+| Variable | `ENABLE_LIVE_FORECASTS` | テストに合格してから `true` にする |
+| Variable（任意） | `PREDICTIONS_PER_RESEARCH_REPORT` | 本番の予測回数。既定は3、最大5 |
+| Variable（任意） | `CLAUDE_MONTHLY_BUDGET_USD` / `GPT_MONTHLY_BUDGET_USD` | 既定は200 / 100 |
+| Variable（任意） | `BUDGET_SOFT_RATIO` / `BUDGET_HARD_RATIO` / `RUN_COST_CAP_USD` | 既定は0.70 / 0.90 / 8 |
+| Variable（任意） | `CLAUDE_MODEL` / `GPT_MODEL` | モデルの差し替え（litellmで料金を計算できるモデルに限る） |
 
-## F. トラブルシュート
+## 運用手順
 
-| エラー | まず確認すること |
-|---|---|
-| `SETUP_ERROR` | GitHub Actions Secretsの名前、APIキーの対象プロジェクト |
-| `Model not found` | Anthropic/OpenAIのモデル利用権限、VariablesのモデルID |
-| `429` | APIレート制限。必要なら予測数と同時実行数を下げる |
-| `Payment required / insufficient quota` | クレジットがAPIに使えるか、課金・残高設定 |
-| 成功なのに提出がない | 新規対象問題が0件か、Botアカウントで確認していない可能性 |
-| `No new questions` | 本大会とMiniBenchの出題タイミング。正常な場合あり |
-| 予測が遅い | GitHub Actionsのスケジュール遅延、単一ジョブの長時間化 |
+1. Secretsを登録します。
+2. `Actions → Test Bot → Run workflow` を実行し、Bot Testing Areaへの投稿をMetaculus上で確認します。
+3. 合格したら `ENABLE_LIVE_FORECASTS=true` を設定し、`Forecast on new AI tournament questions` を手動で1回実行します。
+4. 以降は20分ごとに自動で巡回します（GitHubのスケジュール実行には遅延があります。問題は約3時間開いているため許容範囲です）。
 
-## G. 本番停止方法
+**緊急停止**：`ENABLE_LIVE_FORECASTS` を `false` にし、実行中のRunをキャンセルします。
 
-緊急停止は `Settings → Secrets and variables → Actions → Variables` の `ENABLE_LIVE_FORECASTS` を `false` に変更する。すでに開始済みのRunは `Actions` から手動キャンセルする。停止後、必要に応じてAPIキーを失効する。
+## ルール上の注意
 
-## H. 今後の実装（初回提出後）
-
-- 実際の出題でClaudeとGPTの独立推論を併走させ、妥当なアンサンブルを構築する。
-- 終了済み問題に対するバックテストと校正、時点情報のリーク防止を実装する。
-- 提出率・API費用・予測精度のメトリクスを管理する。
-- 2026年12月18日以降、ACPとCloudflare/WSL/acpnode1への統合を検討する。
-
-## セキュリティ・ルール
-
-開催中の問題への人間の予測修正は禁止されている。終了済み問題の研究を本番ボットへ反映させる。Publicリポジトリには `.env`、APIキー、Botトークン、未公開の秘密情報を絶対にコミットしない。Workflowは `permissions: contents: read` のみ。予測アルゴリズムは公開される。
-
-### 対象外大会の無効化
-
-この起動キットは、公式テンプレートにある `run_bot_on_metaculus_cup.yaml` の定期実行も無効化します。Cupへ意図せず予測を提出したりAPI費用を消費したりしないためです。
+- 開催中の問題について、人間が予測を修正することは禁止されています（Botの出力を見てBotを修正することも含みます）。
+- 予測には必ずBotのコメントを付けます（テンプレートが自動で投稿します）。
+- 1人につきBotは1体まで。賞金の受け取りには、Botの説明またはコードの開示が必要です。

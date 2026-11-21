@@ -1,18 +1,20 @@
 name: Forecast on new AI tournament questions
+# FutureEval Fall 2026 (33121) + MiniBench. Questions stay open ~3 hours, so poll every 20 min.
 on:
   workflow_dispatch:
   schedule:
     - cron: "7,27,47 * * * *"
 
 permissions:
-  contents: read
+  contents: write # only to append spend records to the ops-ledger branch
+
 concurrency:
   group: futureeval-prod
   cancel-in-progress: false
 
 jobs:
   forecast_job:
-    # Keep scheduled AND manual live submission disabled until the owner explicitly opts in.
+    # Live submission stays OFF until the owner sets the repository variable ENABLE_LIVE_FORECASTS=true.
     if: ${{ vars.ENABLE_LIVE_FORECASTS == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 50
@@ -22,10 +24,18 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       ASKNEWS_CLIENT_ID: ${{ secrets.ASKNEWS_CLIENT_ID }}
       ASKNEWS_SECRET: ${{ secrets.ASKNEWS_SECRET }}
+      ENABLE_LIVE_FORECASTS: ${{ vars.ENABLE_LIVE_FORECASTS }}
       CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL }}
       GPT_MODEL: ${{ vars.GPT_MODEL }}
       RESEARCH_REPORTS_PER_QUESTION: "1"
-      PREDICTIONS_PER_RESEARCH_REPORT: "1"
+      PREDICTIONS_PER_RESEARCH_REPORT: ${{ vars.PREDICTIONS_PER_RESEARCH_REPORT || '3' }}
+      CLAUDE_MONTHLY_BUDGET_USD: ${{ vars.CLAUDE_MONTHLY_BUDGET_USD || '200' }}
+      GPT_MONTHLY_BUDGET_USD: ${{ vars.GPT_MONTHLY_BUDGET_USD || '100' }}
+      BUDGET_SOFT_RATIO: ${{ vars.BUDGET_SOFT_RATIO || '0.70' }}
+      BUDGET_HARD_RATIO: ${{ vars.BUDGET_HARD_RATIO || '0.90' }}
+      RUN_COST_CAP_USD: ${{ vars.RUN_COST_CAP_USD || '8' }}
+      LEDGER_DIR: ops_ledger
+      REQUIRE_LEDGER: "true"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -36,7 +46,12 @@ jobs:
           version: "0.13.1"
       - name: Check API configuration
         run: python scripts/preflight.py
+      - name: Load spend ledger
+        run: bash scripts/ledger.sh pull
       - name: Install upstream-locked dependencies
         run: uv sync --locked
       - name: Forecast FutureEval and MiniBench
         run: uv run python main.py --mode tournament
+      - name: Save spend ledger
+        if: always()
+        run: bash scripts/ledger.sh push
