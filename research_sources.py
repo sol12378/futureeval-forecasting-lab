@@ -201,6 +201,16 @@ def parse_extraction(text: str) -> dict:
     return out
 
 
+def fmt(value: float) -> str:
+    """Plain notation (the forecast prompts forbid scientific notation)."""
+    magnitude = abs(value)
+    if magnitude >= 1000:
+        return f"{value:,.0f}"
+    if magnitude >= 1:
+        return f"{value:,.4f}".rstrip("0").rstrip(".")
+    return f"{value:.6f}".rstrip("0").rstrip(".") or "0"
+
+
 def summarise_series(values: list[tuple[str, float]], label: str, unit: str = "") -> str:
     """values: (date, value) oldest -> newest."""
     if not values:
@@ -208,16 +218,16 @@ def summarise_series(values: list[tuple[str, float]], label: str, unit: str = ""
     last_date, last = values[-1]
     year_ago = [v for d, v in values if d <= (datetime.fromisoformat(last_date[:10]) - timedelta(days=365)).strftime("%Y-%m-%d")]
     window = [v for d, v in values if d > (datetime.fromisoformat(last_date[:10]) - timedelta(days=365)).strftime("%Y-%m-%d")]
-    parts = [f"{label}: latest {last:,.4g}{unit} on {last_date[:10]}"]
+    parts = [f"{label}: latest {fmt(last)}{unit} on {last_date[:10]}"]
     if len(values) >= 2:
-        parts.append(f"previous {values[-2][1]:,.4g} on {values[-2][0][:10]}")
+        parts.append(f"previous {fmt(values[-2][1])} on {values[-2][0][:10]}")
     if year_ago:
-        parts.append(f"1y ago {year_ago[-1]:,.4g}")
+        parts.append(f"1y ago {fmt(year_ago[-1])}")
     if len(window) >= 3:
-        parts.append(f"12m range {min(window):,.4g}..{max(window):,.4g}")
+        parts.append(f"12m range {fmt(min(window))}..{fmt(max(window))}")
         changes = [b - a for a, b in zip(window, window[1:])]
         if len(changes) >= 2:
-            parts.append(f"typical step change (stdev) {statistics.pstdev(changes):,.3g}")
+            parts.append(f"typical step change (stdev) {fmt(statistics.pstdev(changes))}")
     return "; ".join(parts)
 
 

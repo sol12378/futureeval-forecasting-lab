@@ -33,6 +33,13 @@ class PureFunctionTests(unittest.TestCase):
         self.assertIn("12m range", line)
         self.assertEqual(rs.summarise_series([], "X"), "")
 
+    def test_fmt_never_scientific(self):
+        self.assertEqual(rs.fmt(56270.4), "56,270")
+        self.assertEqual(rs.fmt(12345678.9), "12,345,679")
+        self.assertEqual(rs.fmt(4.1), "4.1")
+        self.assertEqual(rs.fmt(0.000123), "0.000123")
+        self.assertNotIn("e", rs.fmt(1.5e9))
+
     def test_market_lines(self):
         poly = {"events": [{"title": "E", "markets": [
             {"question": "Will A?", "outcomes": '["Yes","No"]', "outcomePrices": '["0.12","0.88"]', "volume": "15000", "endDate": "2026-12-31T00:00:00Z"},
