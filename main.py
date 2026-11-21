@@ -4,6 +4,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Literal
 
+from forecast_config import build_llm_config, config_counts
+
 import dotenv
 
 # Runtime helpers (env validation, banners, dependency-warning suppression).
@@ -707,25 +709,16 @@ if __name__ == "__main__":
     # Configure the bot. The `llms=` block below is commented out to use
     # whichever default models forecasting-tools picks based on your env vars;
     # uncomment and edit to pin specific models.
+    research_count, prediction_count = config_counts()
     template_bot = FallTemplateBot2026(
-        research_reports_per_question=1,
-        predictions_per_research_report=5,
+        research_reports_per_question=research_count,
+        predictions_per_research_report=prediction_count,
         use_research_summary_to_forecast=False,
         publish_reports_to_metaculus=publish_to_metaculus,
         folder_to_save_reports_to=None,
         skip_previously_forecasted_questions=True,
         extra_metadata_in_explanation=True,
-        # llms={
-        #     "default": GeneralLlm(
-        #         model="openrouter/openai/gpt-4o",
-        #         temperature=0.3,
-        #         timeout=40,
-        #         allowed_tries=2,
-        #     ),
-        #     "summarizer": "openai/gpt-4o-mini",
-        #     "researcher": "asknews/news-summaries",
-        #     "parser": "openai/gpt-4o-mini",
-        # },
+        llms=build_llm_config(),
     )
 
     # Per-mode tournament URL shown in the summary banner footer. These
