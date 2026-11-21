@@ -91,6 +91,20 @@ class HttpTests(unittest.TestCase):
         self.assertIn("latest 4.3", text)
         self.assertIn("CoinGecko bitcoin", text)
 
+    def test_fred_errors_never_contain_the_key(self):
+        def handler(request: httpx.Request):
+            return httpx.Response(403)
+
+        async def extract(prompt):
+            return '{"fred_search": "cpi", "coingecko_ids": []}'
+        with patch.dict("os.environ", {"FRED_API_KEY": "SECRETKEY123"}), patch.object(rs.httpx, "AsyncClient", mock_client(handler)):
+            with self.assertRaises(rs.SourceError) as ctx:
+                asyncio.run(rs.data("q", "c", extract))
+        self.assertNotIn("SECRETKEY123", str(ctx.exception))
+        self.assertNotIn("stlouisfed", str(ctx.exception))
+        import logging
+        self.assertGreaterEqual(logging.getLogger("httpx").level, logging.WARNING)
+
     def test_data_without_fred_key_skips_fred(self):
         async def extract(prompt):
             return '{"fred_search": "cpi", "coingecko_ids": []}'

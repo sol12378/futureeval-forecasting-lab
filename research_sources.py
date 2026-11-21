@@ -14,6 +14,7 @@ treats any failure as "no evidence from this source". Nothing here logs keys or 
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import statistics
@@ -22,7 +23,21 @@ from typing import Any, Awaitable, Callable
 
 import httpx
 
+# httpx logs every request URL at INFO. FRED only accepts its key as a query parameter and the
+# Actions logs of this repository are public, so request logging is silenced for good.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 TIMEOUT = httpx.Timeout(25.0, connect=10.0)
+
+
+class SourceError(RuntimeError):
+    """HTTP failure with the URL (and any key in it) stripped."""
+
+
+def _check(resp: httpx.Response, name: str) -> None:
+    if resp.status_code >= 400:
+        raise SourceError(f"{name} HTTP {resp.status_code}")
 USER_AGENT = "futureeval-forecasting-lab (open-source Metaculus bot)"
 
 
@@ -63,7 +78,7 @@ async def tavily(question_text: str) -> str:
     headers = {"Authorization": f"Bearer {_key('TAVILY_API_KEY')}", "User-Agent": USER_AGENT}
     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
         resp = await client.post("https://api.tavily.com/search", json=payload, headers=headers)
-        resp.raise_for_status()
+        _check(resp, "Tavily")
         results = resp.json().get("results", [])
     lines = []
     for r in results:
@@ -84,7 +99,7 @@ async def exa(question_text: str) -> str:
     headers = {"x-api-key": _key("EXA_API_KEY"), "User-Agent": USER_AGENT}
     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
         resp = await client.post("https://api.exa.ai/search", json=payload, headers=headers)
-        resp.raise_for_status()
+        _check(resp, "Exa")
         results = resp.json().get("results", [])
     lines = []
     for r in results:
@@ -214,13 +229,13 @@ async def _fred(client: httpx.AsyncClient, search_text: str) -> list[str]:
     resp = await client.get(f"{base}/series/search", params={
         "search_text": search_text, "api_key": key, "file_type": "json", "limit": 2, "order_by": "popularity",
     })
-    resp.raise_for_status()
+    _check(resp, "FRED search")
     lines = []
     for series in resp.json().get("seriess", [])[:2]:
         obs = await client.get(f"{base}/series/observations", params={
             "series_id": series["id"], "api_key": key, "file_type": "json", "sort_order": "desc", "limit": 500,
         })
-        obs.raise_for_status()
+        _check(obs, "FRED observations")
         values = []
         for o in reversed(obs.json().get("observations", [])):
             try:
