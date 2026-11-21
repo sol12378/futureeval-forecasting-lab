@@ -27,6 +27,9 @@ jobs:
       ASKNEWS_CLIENT_ID: ${{ secrets.ASKNEWS_CLIENT_ID }}
       ASKNEWS_SECRET: ${{ secrets.ASKNEWS_SECRET }}
       ASKNEWS_API_KEY: ${{ secrets.ASKNEWS_API_KEY }} # official Metaculus setup uses an API key
+      TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+      EXA_API_KEY: ${{ secrets.EXA_API_KEY }}
+      FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
       ENABLE_LIVE_FORECASTS: ${{ vars.ENABLE_LIVE_FORECASTS }}
       CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL }}
       GPT_MODEL: ${{ vars.GPT_MODEL }}

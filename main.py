@@ -1,6 +1,8 @@
 import argparse
 import asyncio
 import contextvars
+
+import research_sources as research_sources_mod
 import logging
 import os
 import sys
@@ -713,6 +715,7 @@ class FallTemplateBot2026(ForecastBot):
 
 
 _FORECASTER: contextvars.ContextVar[str] = contextvars.ContextVar("forecaster", default="claude")
+MC_PROBABILITY_FLOOR = 0.01
 
 
 class GuardedBot(FallTemplateBot2026):
@@ -787,13 +790,26 @@ class GuardedBot(FallTemplateBot2026):
                 logger.warning("AskNews search cap reached; skipping AskNews for %s", question.page_url)
                 return ""
             return await super().run_research(question)
+        if source == "tavily":
+            return await research_sources_mod.tavily(question.question_text)
+        if source == "exa":
+            return await research_sources_mod.exa(question.question_text)
+        if source == "markets":
+            return await research_sources_mod.markets(question.question_text)
+        if source == "data":
+            parser = self.get_llm("parser", "llm")
+            return await research_sources_mod.data(question.question_text, question.resolution_criteria, parser.invoke)
         llm = self.get_llm("claude_researcher" if source == "claude_web" else "gpt_researcher", "llm")
         return await llm.invoke(self._web_research_prompt(question))
 
     async def run_research(self, question: MetaculusQuestion) -> str:
         """Run every configured source in parallel; a failing source never fails the question."""
         self._guard(f"research for {question.page_url}")
-        titles = {"claude_web": "Web research (Claude)", "gpt_web": "Web research (GPT)", "asknews": "News (AskNews)"}
+        titles = {
+            "claude_web": "Web research (Claude)", "gpt_web": "Web research (GPT)", "asknews": "News (AskNews)",
+            "tavily": "News search results (Tavily)", "exa": "Web search results (Exa)",
+            "markets": "Prediction markets", "data": "Official data",
+        }
         async with self._research_semaphore():
             results = await asyncio.gather(
                 *(self._research_with(src, question) for src in self.research_sources), return_exceptions=True
@@ -813,6 +829,35 @@ class GuardedBot(FallTemplateBot2026):
             if result and result.strip():
                 sections.append(f"## {titles[source]}\n{result.strip()}")
         return "\n\n".join(sections)
+
+    # ------------------------------------------------------------- loss guards
+    def _get_conditional_disclaimer_if_necessary(self, question: MetaculusQuestion) -> str:
+        # Injected into every forecast prompt (binary / MC / numeric / date) by the template.
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        closes = getattr(question, "close_time", None)
+        resolves = getattr(question, "scheduled_resolution_time", None)
+        return super()._get_conditional_disclaimer_if_necessary(question) + "\n" + clean_indents(
+            f"""
+            Important checks before you answer (today is {today} UTC; question closes {closes}; scheduled resolution {resolves}):
+            - Unless the research clearly shows the outcome has ALREADY happened, assume it has not happened yet; this question is still open.
+            - "Before <date>" / "by <date>" means the window from now until that date; count how much time is actually left.
+            - Base your current values on the research and official data provided, not on memory; if they conflict, prefer the most recent dated source.
+            - Re-check units and scale (thousands vs millions, percent vs percentage points) against the question's stated units.
+            - Prediction-market prices in the research are only a loose reference: their resolution rules and dates may differ.
+            - Historically about two thirds of binary questions in these tournaments resolved No and the status quo usually holds; avoid both overconfidence and reflexive 50%.
+            """
+        )
+
+    async def _run_forecast_on_multiple_choice(self, question, research):
+        # Never leave an option at ~0: one surprise outcome at 0.1% costs far more than the floor.
+        prediction = await super()._run_forecast_on_multiple_choice(question, research)
+        options = prediction.prediction_value.predicted_options
+        floor = min(MC_PROBABILITY_FLOOR, 0.5 / max(len(options), 1))
+        raised = [max(option.probability, floor) for option in options]
+        total = sum(raised)
+        for option, value in zip(options, raised):
+            option.probability = value / total
+        return prediction
 
     # ---------------------------------------------------------------- ensemble
     def get_llm(self, purpose="default", guarantee_type=None):

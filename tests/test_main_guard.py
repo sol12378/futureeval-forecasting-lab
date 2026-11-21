@@ -159,6 +159,28 @@ class MainGuardTests(unittest.TestCase):
         self.assertNotIn("GPT", text)
         self.assertEqual(guard.research_failures, 1)
 
+    def test_prompt_guard_and_mc_floor(self):
+        from types import SimpleNamespace
+
+        from forecasting_tools import PredictedOption, PredictedOptionList, ReasonedPrediction
+
+        bot = self.main.GuardedBot(llms={"default": "x", "parser": "x", "summarizer": "x", "researcher": "no_research"})
+        q = SimpleNamespace(conditional_type=None, close_time="2026-12-01", scheduled_resolution_time="2026-12-31")
+        guard_text = bot._get_conditional_disclaimer_if_necessary(q)
+        self.assertIn("assume it has not happened yet", guard_text)
+        self.assertIn("units", guard_text)
+
+        async def fake_mc(_self, question, research):
+            opts = [PredictedOption(option_name="A", probability=0.999), PredictedOption(option_name="B", probability=0.001),
+                    PredictedOption(option_name="C", probability=0.0)]
+            return ReasonedPrediction(prediction_value=PredictedOptionList(predicted_options=opts), reasoning="r")
+
+        with patch.object(self.main.FallTemplateBot2026, "_run_forecast_on_multiple_choice", fake_mc):
+            result = asyncio.run(bot._run_forecast_on_multiple_choice(q, ""))
+        probs = [o.probability for o in result.prediction_value.predicted_options]
+        self.assertAlmostEqual(sum(probs), 1.0)
+        self.assertTrue(all(p >= 0.0098 for p in probs))
+
     def test_guarded_bot_skips_question_when_budget_exhausted(self):
         from budget_guard import BudgetExceeded, BudgetGuard
 

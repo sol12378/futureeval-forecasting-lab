@@ -18,19 +18,20 @@ GPT_REASONING_EFFORTS = ("none", "low", "medium", "high", "xhigh", "max")
 # Ensemble + research defaults (each overridable with a repository variable of the same name).
 DEFAULTS = {
     # Who makes each of the N predictions per question (median-aggregated by forecasting-tools).
-    "FORECASTER_PLAN": "claude,claude,claude,claude,gpt,gpt",
+    # Balanced across vendors: past winners got most from de-correlated ensemble members.
+    "FORECASTER_PLAN": "claude,claude,claude,gpt,gpt,gpt",
     "CLAUDE_FORECAST_EFFORT": "xhigh",
     "GPT_FORECAST_MODEL": "openai/gpt-6.2-sol",
     "GPT_FORECAST_EFFORT": "high",
     # Research sources run in parallel; their findings are concatenated for every forecaster.
     # AskNews is opt-in (add "asknews"): its prepaid credit is nearly used up.
-    "RESEARCH_SOURCES": "claude_web,gpt_web",
+    "RESEARCH_SOURCES": "claude_web,gpt_web,tavily,exa,markets,data",
     "CLAUDE_RESEARCH_MODEL": "anthropic/claude-opus-5-5",
     "GPT_RESEARCH_MODEL": "openai/gpt-6.2-sol",
     "GPT_RESEARCH_EFFORT": "low",
 }
 FORECASTERS = ("claude", "gpt")
-RESEARCH_SOURCES = ("claude_web", "gpt_web", "asknews")
+RESEARCH_SOURCES = ("claude_web", "gpt_web", "asknews", "tavily", "exa", "markets", "data")
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
 REQUIRED_SECRETS = ("METACULUS_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY")
@@ -96,6 +97,9 @@ def research_sources(env: dict | None = None) -> list[str]:
         raise ValueError(f"RESEARCH_SOURCES must be a subset of {RESEARCH_SOURCES}")
     if "asknews" in sources and not has_asknews(e):
         sources.remove("asknews")
+    for name, key in (("tavily", "TAVILY_API_KEY"), ("exa", "EXA_API_KEY")):
+        if name in sources and not _env(e, key):
+            sources.remove(name)
     return sources
 
 

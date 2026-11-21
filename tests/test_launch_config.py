@@ -77,14 +77,15 @@ class ModelSelectionTests(unittest.TestCase):
     def test_ensemble_and_research_settings(self):
         from forecast_config import forecaster_plan, research_sources
 
-        self.assertEqual(forecaster_plan({}), ["claude", "claude", "claude", "claude", "gpt", "gpt"])
+        self.assertEqual(forecaster_plan({}), ["claude", "claude", "claude", "gpt", "gpt", "gpt"])
         self.assertEqual(forecaster_plan({"FORECASTER_PLAN": "claude, gpt"}), ["claude", "gpt"])
         for bad in ("gemini", "", ",".join(["claude"] * 8)):
             if bad:
                 with self.assertRaises(ValueError):
                     forecaster_plan({"FORECASTER_PLAN": bad})
-        self.assertEqual(research_sources({}), ["claude_web", "gpt_web"])  # no AskNews key -> dropped
-        self.assertEqual(research_sources({"ASKNEWS_API_KEY": "k"}), ["claude_web", "gpt_web"])  # opt-in only
+        self.assertEqual(research_sources({}), ["claude_web", "gpt_web", "markets", "data"])  # no Tavily/Exa keys
+        self.assertEqual(research_sources({"TAVILY_API_KEY": "t", "EXA_API_KEY": "e", "ASKNEWS_API_KEY": "k"}),
+                         ["claude_web", "gpt_web", "tavily", "exa", "markets", "data"])  # AskNews opt-in only
         self.assertEqual(research_sources({"ASKNEWS_API_KEY": "k", "RESEARCH_SOURCES": "gpt_web,asknews"}), ["gpt_web", "asknews"])
         with self.assertRaises(ValueError):
             research_sources({"RESEARCH_SOURCES": "google"})
