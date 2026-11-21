@@ -1,5 +1,7 @@
 import json
+import os
 import tempfile
+from unittest.mock import patch
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -98,7 +100,7 @@ class BudgetGuardTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.guard(BUDGET_SOFT_RATIO="0.95", BUDGET_HARD_RATIO="0.9")
         with self.assertRaises(ValueError):
-            self.guard(CLAUDE_MONTHLY_BUDGET_USD="abc")
+            self.guard(CLAUDE_MONTHLY_BUDGET_PER_KEY_USD="abc")
 
     def test_record_llm_call_prices_and_dedupes(self):
         g = self.guard()
@@ -172,6 +174,36 @@ class BudgetGuardTests(unittest.TestCase):
             write(self.ledger, "2026-11", "zz.json", {"cost_usd": {}, **bad})
             with self.assertRaises(LedgerError, msg=str(bad)):
                 load_last_key_slots(self.ledger, "2026-11")
+
+    def test_per_key_budget_rotates_then_stops(self):
+        from api_keys import KeyPool
+
+        # key 1 of Claude already spent $185 of its $200 this month (92.5% >= 90%)
+        write(self.ledger, "2026-11", "a.json",
+              {"cost_usd": {"anthropic": 185.0}, "cost_by_key_slot": {"anthropic": {"1": 185.0}}})
+        g = self.guard()
+        self.assertEqual(g.level(), "hard")  # single key known so far -> exhausted
+        pools = {"anthropic": KeyPool("anthropic", {"ANTHROPIC_API_KEY": "a1", "ANTHROPIC_API_KEY_2": "a2"}),
+                 "openai": KeyPool("openai", {"OPENAI_API_KEY": "o1"})}
+        with patch.dict(os.environ, {}):
+            g.attach_key_pools(pools)
+            self.assertEqual(g.capacity("anthropic"), 400.0)
+            self.assertEqual(g.level(), "ok")  # combined 185/400 = 46%: key 2 still fresh
+            g.assert_can_spend()  # rotates Claude to key 2 instead of stopping
+            self.assertEqual(pools["anthropic"].slot, 2)
+            self.assertEqual(os.environ["ANTHROPIC_API_KEY"], "a2")
+            g.add_cost("anthropic", 181.0)  # key 2 now at 90.5%
+            self.assertTrue(g.provider_exhausted("anthropic"))
+            with self.assertRaises(BudgetExceeded):
+                g.assert_can_spend()
+            self.assertEqual(g.cost_by_slot["anthropic"], {"2": 181.0})
+
+    def test_legacy_records_count_against_key1(self):
+        from budget_guard import load_month_spend_by_slot
+
+        write(self.ledger, "2026-11", "a.json", {"cost_usd": {"openai": 3.0}})
+        write(self.ledger, "2026-11", "b.json", {"cost_usd": {"openai": 2.0}, "cost_by_key_slot": {"openai": {"2": 2.0}}})
+        self.assertEqual(load_month_spend_by_slot(self.ledger, "2026-11")["openai"], {"1": 3.0, "2": 2.0})
 
     def test_previous_month(self):
         self.assertEqual(previous_month("2026-01"), "2025-12")

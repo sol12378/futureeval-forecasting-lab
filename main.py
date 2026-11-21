@@ -799,6 +799,8 @@ def run(run_mode: str) -> int:
     except (LedgerError, ValueError) as exc:
         print(f"BUDGET_CONFIG_ERROR: {exc}")
         return EXIT_CONFIG
+    # Budgets are per key: attaching the pools lets the guard count keys and rotate keys early.
+    guard.attach_key_pools(key_pools)
 
     print("\n".join(guard.summary_lines()))
     level = guard.level()
@@ -812,7 +814,6 @@ def run(run_mode: str) -> int:
         prediction_count = 1
     for pool in key_pools.values():
         pool.activate()
-    guard.key_slot = lambda provider: key_pools[provider].slot
     guard.install()
 
     if run_mode != "test_questions" and os.getenv("LOG_FORECAST_DETAILS", "").lower() != "true":

@@ -7,10 +7,11 @@ keeps its own ledger. Every run writes one JSON record (never edits old ones) to
 ``<ledger_dir>/runs/<YYYY-MM>/``. In GitHub Actions that directory is a checkout
 of the ``ops-ledger`` branch, so records survive between runs and never conflict.
 
-Rules (all fail closed):
-- Monthly spend per provider = sum of this month's run records.
-- spend >= soft ratio  -> run with 1 prediction per question (cheap mode).
-- spend >= hard ratio  -> refuse to start / stop starting new LLM work.
+Rules (all fail closed). Budgets are PER API KEY (each key has its own monthly credit):
+- Monthly spend per provider and key slot = sum of this month's run records.
+- Active key >= hard ratio of its budget -> switch to the provider's next key proactively;
+  when every configured key of a provider is >= hard ratio -> stop starting new LLM work.
+- Provider spend >= soft ratio of (per-key budget x number of keys) -> 1 prediction per question.
 - A single run may not exceed RUN_COST_CAP_USD in total.
 - A corrupt ledger record aborts the run instead of being treated as $0.
 - An LLM call whose cost litellm cannot price is charged a conservative amount.
@@ -35,8 +36,9 @@ logger = logging.getLogger(__name__)
 
 PROVIDERS = ("anthropic", "openai")
 PROVIDER_LABEL = {"anthropic": "Claude", "openai": "GPT"}
+# Monthly credit of EACH key (the owner has one budget per key, two keys per provider).
 DEFAULT_MONTHLY_BUDGET_USD = {"anthropic": 200.0, "openai": 100.0}
-BUDGET_ENV = {"anthropic": "CLAUDE_MONTHLY_BUDGET_USD", "openai": "GPT_MONTHLY_BUDGET_USD"}
+BUDGET_ENV = {"anthropic": "CLAUDE_MONTHLY_BUDGET_PER_KEY_USD", "openai": "GPT_MONTHLY_BUDGET_PER_KEY_USD"}
 DEFAULT_SOFT_RATIO = 0.70
 DEFAULT_HARD_RATIO = 0.90
 DEFAULT_RUN_COST_CAP_USD = 8.0
@@ -180,6 +182,21 @@ def load_month_spend(ledger_dir: Path, month: str) -> dict[str, float]:
     return spend
 
 
+def load_month_spend_by_slot(ledger_dir: Path, month: str) -> dict[str, dict[str, float]]:
+    """Spend per provider and key slot. Records without a per-slot split count against slot 1."""
+    spend: dict[str, dict[str, float]] = {p: {} for p in PROVIDERS}
+    for record in _iter_records(ledger_dir, month):
+        by_slot = record.get("cost_by_key_slot", {})
+        for provider in PROVIDERS:
+            parts = by_slot.get(provider) or {"1": record["cost_usd"].get(provider, 0.0)}
+            for slot, cost in parts.items():
+                spend[provider][slot] = spend[provider].get(slot, 0.0) + float(cost)
+    for provider, slots in spend.items():
+        if not all(math.isfinite(v) for v in slots.values()):
+            raise LedgerError(f"Non-finite monthly spend for {provider}")
+    return spend
+
+
 def load_submitted_keys(ledger_dir: Path, months: Iterable[str]) -> set[str]:
     """Question keys already submitted to a scored tournament (duplicate guard)."""
     keys: set[str] = set()
@@ -209,8 +226,9 @@ class BudgetGuard:
     ledger_dir: Path
     mode: str
     month: str
-    budgets: dict[str, float]
+    budgets: dict[str, float]  # per key
     month_spend: dict[str, float]
+    month_slot_spend: dict[str, dict[str, float]] = field(default_factory=lambda: {p: {} for p in PROVIDERS})
     soft_ratio: float = DEFAULT_SOFT_RATIO
     hard_ratio: float = DEFAULT_HARD_RATIO
     run_cost_cap: float = DEFAULT_RUN_COST_CAP_USD
@@ -219,6 +237,8 @@ class BudgetGuard:
     unknown_provider_cost: float = 0.0
     cost_by_slot: dict[str, dict[str, float]] = field(default_factory=lambda: {p: {} for p in PROVIDERS})
     key_slot: Any = None  # callable(provider) -> active 1-based key slot
+    key_counts: dict[str, int] = field(default_factory=lambda: {p: 1 for p in PROVIDERS})
+    key_pools: dict = field(default_factory=dict)
     questions: dict[str, dict] = field(default_factory=dict)
     started_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     _seen_call_ids: set = field(default_factory=set)
@@ -242,7 +262,14 @@ class BudgetGuard:
         if require_ledger and not ledger_dir.is_dir():
             raise LedgerError(f"Ledger directory {ledger_dir} is missing (REQUIRE_LEDGER=true)")
         spend = load_month_spend(ledger_dir, month)
-        return cls(ledger_dir, mode, month, budgets, spend, soft, hard, run_cap)
+        slot_spend = load_month_spend_by_slot(ledger_dir, month)
+        return cls(ledger_dir, mode, month, budgets, spend, slot_spend, soft, hard, run_cap)
+
+    def attach_key_pools(self, pools: dict) -> None:
+        """Use api_keys.KeyPool objects: per-key budgets, slot tracking and proactive switching."""
+        self.key_pools = dict(pools)
+        self.key_counts = {p: max(1, pools[p].size) if p in pools else 1 for p in PROVIDERS}
+        self.key_slot = lambda provider: pools[provider].slot if provider in pools else 1
 
     def install(self) -> None:
         """Register a litellm success callback that books each call's cost."""
@@ -297,24 +324,56 @@ class BudgetGuard:
     def add_cost(self, provider: str, cost: float) -> None:
         with self._lock:
             self.run_spend[provider] += cost
+            slot = str(self._slot(provider))
+            self.cost_by_slot[provider][slot] = self.cost_by_slot[provider].get(slot, 0.0) + cost
 
     def total_spend(self, provider: str) -> float:
         return self.month_spend[provider] + self.run_spend[provider]
 
-    def ratio(self, provider: str) -> float:
+    def capacity(self, provider: str) -> float:
+        return self.budgets[provider] * self.key_counts[provider]
+
+    def slot_spend(self, provider: str, slot: int) -> float:
+        key = str(slot)
+        return self.month_slot_spend[provider].get(key, 0.0) + self.cost_by_slot[provider].get(key, 0.0)
+
+    def slot_ratio(self, provider: str, slot: int) -> float:
         budget = self.budgets[provider]
-        spent = self.total_spend(provider)
+        spent = self.slot_spend(provider, slot)
         if budget <= 0 or not math.isfinite(spent):
             return float("inf")  # fail closed
         return spent / budget
 
+    def ratio(self, provider: str) -> float:
+        """Spend against the combined budget of all configured keys (drives cheap mode)."""
+        capacity = self.capacity(provider)
+        spent = self.total_spend(provider)
+        if capacity <= 0 or not math.isfinite(spent):
+            return float("inf")  # fail closed
+        return spent / capacity
+
+    def provider_exhausted(self, provider: str) -> bool:
+        slots = range(1, self.key_counts[provider] + 1)
+        return all(self.slot_ratio(provider, s) >= self.hard_ratio for s in slots) or not math.isfinite(
+            self.total_spend(provider)
+        )
+
     def level(self) -> str:
-        worst = max(self.ratio(p) for p in PROVIDERS)
-        if worst >= self.hard_ratio:
+        if any(self.provider_exhausted(p) for p in PROVIDERS):
             return "hard"
-        if worst >= self.soft_ratio:
+        if max(self.ratio(p) for p in PROVIDERS) >= self.soft_ratio:
             return "soft"
         return "ok"
+
+    def _rotate_off_spent_key(self, provider: str) -> None:
+        """Move to the next key before the active one crosses its own hard ratio."""
+        pool = self.key_pools.get(provider)
+        while pool is not None and self.slot_ratio(provider, pool.slot) >= self.hard_ratio:
+            slot = pool.slot
+            if not pool.mark_exhausted(slot) or pool.slot == slot:
+                break
+            logger.warning("%s key %d reached %.0f%% of its budget; using key %d",
+                           PROVIDER_LABEL[provider], slot, self.hard_ratio * 100, pool.slot)
 
     def run_total(self) -> float:
         return sum(self.run_spend.values()) + self.unknown_provider_cost
@@ -322,10 +381,11 @@ class BudgetGuard:
     def assert_can_spend(self, what: str = "LLM work") -> None:
         """Call before starting research/prediction work for a question."""
         for provider in PROVIDERS:
-            if self.ratio(provider) >= self.hard_ratio:
+            self._rotate_off_spent_key(provider)
+            if self.provider_exhausted(provider) or self.slot_ratio(provider, self._slot(provider)) >= self.hard_ratio:
                 raise BudgetExceeded(
-                    f"{PROVIDER_LABEL[provider]} spend ${self.total_spend(provider):.2f} reached "
-                    f"{self.hard_ratio:.0%} of ${self.budgets[provider]:.2f}; refusing {what}"
+                    f"{PROVIDER_LABEL[provider]} keys reached {self.hard_ratio:.0%} of their "
+                    f"${self.budgets[provider]:.2f}/key budget (month ${self.total_spend(provider):.2f}); refusing {what}"
                 )
         if self.run_total() >= self.run_cost_cap:
             raise BudgetExceeded(f"Run cost ${self.run_total():.2f} reached cap ${self.run_cost_cap:.2f}; refusing {what}")
@@ -346,11 +406,13 @@ class BudgetGuard:
         for p in PROVIDERS:
             lines.append(
                 f"  {PROVIDER_LABEL[p]}: this run ${self.run_spend[p]:.4f}, month ${self.total_spend(p):.2f} / "
-                f"${self.budgets[p]:.2f} ({self.ratio(p):.1%})"
+                f"${self.capacity(p):.2f} ({self.key_counts[p]} key(s) x ${self.budgets[p]:.2f}, {self.ratio(p):.1%})"
             )
-        for p in PROVIDERS:
-            by_slot = ", ".join(f"key{k} ${v:.4f}" for k, v in sorted(self.cost_by_slot[p].items())) or "no calls"
-            lines.append(f"  {PROVIDER_LABEL[p]} key slot now: {self._slot(p)} ({by_slot})")
+            per_key = ", ".join(
+                f"key{s} ${self.slot_spend(p, s):.2f} ({self.slot_ratio(p, s):.0%})"
+                for s in range(1, self.key_counts[p] + 1)
+            )
+            lines.append(f"    active key {self._slot(p)}; month per key: {per_key}")
         if self.unpriced_calls:
             lines.append(f"  WARNING: {self.unpriced_calls} unpriced call(s) charged conservatively")
         if self.unknown_provider_cost:

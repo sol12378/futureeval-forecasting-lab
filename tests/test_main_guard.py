@@ -36,7 +36,7 @@ class MainGuardTests(unittest.TestCase):
             client.assert_not_called()
 
     def test_hard_budget_refuses_before_any_call(self):
-        os.environ.update(ENABLE_LIVE_FORECASTS="true", CLAUDE_MONTHLY_BUDGET_USD="1")
+        os.environ.update(ENABLE_LIVE_FORECASTS="true", CLAUDE_MONTHLY_BUDGET_PER_KEY_USD="1")
         from budget_guard import current_month
 
         d = Path(self.tmp.name) / "runs" / current_month()
