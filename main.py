@@ -998,6 +998,48 @@ def audit(hours: int) -> int:
     return EXIT_MISSED if missed else EXIT_OK
 
 
+SELFCHECK_QUESTIONS = (
+    ("Will the US unemployment rate (BLS, series UNRATE) for December 2026 be above 4.5%?",
+     "Resolves Yes if the seasonally adjusted U-3 unemployment rate for December 2026 published by BLS exceeds 4.5%."),
+    ("Will the price of Bitcoin be above $100,000 on December 31, 2026?",
+     "Resolves Yes if the CoinGecko BTC/USD daily close for 2026-12-31 is above $100,000."),
+)
+
+
+def selfcheck() -> int:
+    """Health check of the free research sources (no forecasts, no Metaculus writes)."""
+    from api_keys import KeyPool
+
+    pools = {p: KeyPool(p) for p in ("anthropic", "openai")}
+    for pool in pools.values():
+        pool.activate()
+    llms = build_llm_config(key_pools=pools)
+    parser_llm = llms["parser"]
+    sources = [s for s in research_sources() if s in ("tavily", "exa", "markets", "data")]
+    ok = True
+
+    async def one(source, text, criteria):
+        if source == "data":
+            return await research_sources_mod.data(text, criteria, parser_llm.invoke)
+        return await getattr(research_sources_mod, source)(text)
+
+    for text, criteria in SELFCHECK_QUESTIONS:
+        results = asyncio.run(_gather_sources(one, sources, text, criteria))
+        print(f"Q: {text}")
+        for source, result in zip(sources, results):
+            if isinstance(result, BaseException):
+                ok = False
+                print(f"  {source}: FAILED ({type(result).__name__})")
+            else:
+                preview = " ".join(result.split())[:240]
+                print(f"  {source}: {len(result)} chars | {preview}")
+    return EXIT_OK if ok else EXIT_QUESTION_ERRORS
+
+
+async def _gather_sources(one, sources, text, criteria):
+    return await asyncio.gather(*(one(s, text, criteria) for s in sources), return_exceptions=True)
+
+
 def run(run_mode: str) -> int:
     check_environment(strict=True)
     live_enabled = os.getenv("ENABLE_LIVE_FORECASTS", "").strip().lower() == "true"
@@ -1180,7 +1222,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--mode",
         type=str,
-        choices=["tournament", "metaculus_cup", "test_questions", "audit"],
+        choices=["tournament", "metaculus_cup", "test_questions", "audit", "selfcheck"],
         default="tournament",
         help="What to forecast on (default: tournament)",
     )
@@ -1188,4 +1230,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.mode == "audit":
         sys.exit(audit(args.hours))
+    if args.mode == "selfcheck":
+        check_environment(strict=True)
+        sys.exit(selfcheck())
     sys.exit(run(args.mode))

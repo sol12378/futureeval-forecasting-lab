@@ -1,0 +1,37 @@
+name: Research sources self-check
+# Calls Tavily, Exa, prediction markets and FRED/CoinGecko once each on two fixed sample
+# questions and prints result sizes and previews. No forecasts, no Metaculus writes.
+# Cost: 2 Tavily credits, 2 Exa searches, 2 tiny GPT extraction calls.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  selfcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      ANTHROPIC_API_KEY_2: ${{ secrets.ANTHROPIC_API_KEY_2 }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_API_KEY_2: ${{ secrets.OPENAI_API_KEY_2 }}
+      TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+      EXA_API_KEY: ${{ secrets.EXA_API_KEY }}
+      FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v10.3.0
+        with:
+          version: "0.13.1"
+      - name: Install locked dependencies
+        run: uv sync --locked
+      - name: Self-check research sources
+        run: uv run python main.py --mode selfcheck
