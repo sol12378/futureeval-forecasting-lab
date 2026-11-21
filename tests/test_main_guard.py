@@ -4,6 +4,7 @@ import os
 import tempfile
 import unittest
 from datetime import datetime, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -68,6 +69,25 @@ class MainGuardTests(unittest.TestCase):
         with patch.object(self.main.FallTemplateBot2026, "run_research", boom):
             self.assertEqual(asyncio.run(bot.run_research(Q())), "")
         self.assertEqual(guard.research_failures, 1)
+
+    def test_verify_on_metaculus(self):
+        from types import SimpleNamespace
+
+        t0 = datetime(2026, 11, 21, 3, 0, tzinfo=timezone.utc)
+
+        def q(post, ts, flag=True):
+            hist = [SimpleNamespace(timestamp=ts)] if ts else None
+            return SimpleNamespace(id_of_post=post, id_of_question=post, page_url=f"https://m/{post}",
+                                   previous_forecasts=hist, already_forecasted=flag)
+
+        client = SimpleNamespace(get_all_open_questions_from_tournament=lambda _t: [
+            q(1, t0.replace(minute=5)), q(2, t0.replace(hour=1)), q(3, None, True)])
+        lines, ok = self.main.verify_on_metaculus(client, "bot-testing-area", {"1:1", "3:3"}, t0)
+        self.assertTrue(ok)
+        self.assertTrue(lines[0].startswith("VERIFIED on Metaculus: https://m/1"))
+        lines, ok = self.main.verify_on_metaculus(client, "bot-testing-area", {"2:2", "4:4"}, t0)
+        self.assertFalse(ok)  # 2 only has an old forecast
+        self.assertTrue(any("Could not re-read 4:4" in line for line in lines))
 
     def test_guarded_bot_skips_question_when_budget_exhausted(self):
         from budget_guard import BudgetExceeded, BudgetGuard

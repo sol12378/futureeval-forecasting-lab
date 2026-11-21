@@ -784,6 +784,34 @@ def _write_step_summary(lines: list[str]) -> None:
         fh.write("```\n" + "\n".join(lines) + "\n```\n")
 
 
+def _latest_my_forecast_time(question) -> datetime | None:
+    history = getattr(question, "previous_forecasts", None) or []
+    times = [p.timestamp for p in history if getattr(p, "timestamp", None) is not None]
+    return max(times) if times else None
+
+
+def verify_on_metaculus(client, tournament_id, submitted_keys: set[str], run_started: datetime) -> tuple[list[str], bool]:
+    """Re-read the tournament as the bot and confirm each submitted forecast is visible on Metaculus."""
+    lines, ok = [], True
+    seen = set()
+    for q in client.get_all_open_questions_from_tournament(tournament_id):
+        key = question_key(q)
+        if key not in submitted_keys:
+            continue
+        seen.add(key)
+        latest = _latest_my_forecast_time(q)
+        if latest is not None and latest >= run_started:
+            lines.append(f"VERIFIED on Metaculus: {q.page_url} (my latest forecast at {latest.isoformat()})")
+        elif q.already_forecasted and latest is None:
+            lines.append(f"VERIFIED (forecast flag only, no timestamp): {q.page_url}")
+        else:
+            ok = False
+            lines.append(f"NOT VISIBLE on Metaculus: {q.page_url} (latest={latest})")
+    for key in sorted(submitted_keys - seen):
+        lines.append(f"Could not re-read {key} (question no longer open?)")
+    return lines, ok
+
+
 def run(run_mode: str) -> int:
     check_environment(strict=True)
     live_enabled = os.getenv("ENABLE_LIVE_FORECASTS", "").strip().lower() == "true"
@@ -903,7 +931,14 @@ def run(run_mode: str) -> int:
             bot.skip_previously_forecasted_questions = False
             questions = client.get_all_open_questions_from_tournament("bot-testing-area")
             notes.append(f"Bot Testing Area: open={len(questions)}")
+            run_started = datetime.now(timezone.utc)
             forecast_reports = asyncio.run(bot.forecast_questions(questions, return_exceptions=True))
+            submitted = {k for k, v in guard.questions.items() if v["status"] == "submitted"}
+            if submitted:
+                lines, ok = verify_on_metaculus(client, "bot-testing-area", submitted, run_started)
+                notes.extend(lines)
+                if not ok:
+                    exit_code = max(exit_code, EXIT_MISSED)
         elif run_mode == "metaculus_cup":
             bot.skip_previously_forecasted_questions = False
             forecast_reports = asyncio.run(
