@@ -25,6 +25,7 @@ jobs:
       # check_environment() requires at least one LLM key to be present; none is used here.
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       AUDIT_HOURS: ${{ inputs.hours || '24' }}
+      AUDIT_NOT_BEFORE: "2026-11-21T02:50:00Z" # live submission started here
     steps:
       - uses: actions/checkout@v4
         with:

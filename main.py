@@ -973,10 +973,15 @@ def audit(hours: int) -> int:
     now = datetime.now(timezone.utc)
     lines, missed = [], []
     for label, tournament_id in (("FutureEval", client.CURRENT_AI_COMPETITION_ID), ("MiniBench", client.CURRENT_MINIBENCH_ID)):
+        # Questions that opened before the bot went live are not "missed" (AUDIT_NOT_BEFORE, ISO UTC).
+        since = now - timedelta(hours=hours)
+        not_before = os.getenv("AUDIT_NOT_BEFORE", "").strip()
+        if not_before:
+            since = max(since, datetime.fromisoformat(not_before.replace("Z", "+00:00")))
         api_filter = ApiFilter(
             allowed_tournaments=[tournament_id],
             allowed_statuses=["open", "closed", "resolved"],
-            open_time_gt=now - timedelta(hours=hours),
+            open_time_gt=since,
             group_question_mode="unpack_subquestions",
         )
         questions = asyncio.run(client.get_questions_matching_filter(api_filter))
