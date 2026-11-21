@@ -720,8 +720,21 @@ class GuardedBot(FallTemplateBot2026):
         if self.budget_guard is not None:
             self.budget_guard.assert_can_spend(what)
 
+    def _create_single_distribution_parsing_message(self, question) -> str:
+        # Claude sometimes adds a median line; the two parser samples then disagree on whether to
+        # include it and the whole question fails. Pin the parser to the six requested percentiles.
+        return super()._create_single_distribution_parsing_message(question) + (
+            "\n- Return exactly the six percentiles that were requested: 10, 20, 40, 60, 80 and 90."
+            " Ignore any other percentiles (for example a median / 50th percentile or 5th/95th) even if they appear in the text."
+        )
+
     async def run_research(self, question: MetaculusQuestion) -> str:
         self._guard(f"research for {question.page_url}")
+        researcher = str(GeneralLlm.to_model_name(self.get_llm("researcher")))
+        guard = self.budget_guard
+        if researcher.startswith("asknews") and guard is not None and not guard.try_reserve_asknews_call():
+            logger.warning("AskNews search cap reached; forecasting %s without research", question.page_url)
+            return ""
         try:
             return await super().run_research(question)
         except BudgetExceeded:

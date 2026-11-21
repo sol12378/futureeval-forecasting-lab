@@ -89,6 +89,32 @@ class MainGuardTests(unittest.TestCase):
         self.assertFalse(ok)  # 2 only has an old forecast
         self.assertTrue(any("Could not re-read 4:4" in line for line in lines))
 
+    def test_asknews_cap_skips_search_without_calling_it(self):
+        from budget_guard import BudgetGuard
+
+        guard = BudgetGuard.from_env("tournament", {"LEDGER_DIR": self.tmp.name, "ASKNEWS_TOTAL_CALL_CAP": "0"})
+        bot = self.main.GuardedBot(llms={"default": "x", "parser": "x", "summarizer": "x",
+                                         "researcher": "asknews/news-summaries"})
+        bot.budget_guard = guard
+
+        class Q:
+            page_url = "https://example/7"
+
+        async def never(_self, _q):
+            raise AssertionError("AskNews must not be called past the cap")
+
+        with patch.object(self.main.FallTemplateBot2026, "run_research", never):
+            self.assertEqual(asyncio.run(bot.run_research(Q())), "")
+        self.assertEqual(guard.asknews_calls, 0)
+
+    def test_numeric_parsing_pins_six_percentiles(self):
+        from types import SimpleNamespace
+
+        bot = self.main.GuardedBot(llms={"default": "x", "parser": "x", "summarizer": "x", "researcher": "no_research"})
+        msg = bot._create_single_distribution_parsing_message(SimpleNamespace(group_question_option=None))
+        self.assertIn("10, 20, 40, 60, 80 and 90", msg)
+        self.assertIn("Ignore any other percentiles", msg)
+
     def test_guarded_bot_skips_question_when_budget_exhausted(self):
         from budget_guard import BudgetExceeded, BudgetGuard
 

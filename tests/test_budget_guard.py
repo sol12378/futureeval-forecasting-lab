@@ -205,6 +205,18 @@ class BudgetGuardTests(unittest.TestCase):
         write(self.ledger, "2026-11", "b.json", {"cost_usd": {"openai": 2.0}, "cost_by_key_slot": {"openai": {"2": 2.0}}})
         self.assertEqual(load_month_spend_by_slot(self.ledger, "2026-11")["openai"], {"1": 3.0, "2": 2.0})
 
+    def test_asknews_lifetime_cap_spans_months(self):
+        write(self.ledger, "2026-10", "a.json", {"cost_usd": {}, "asknews_calls": 2})
+        write(self.ledger, "2026-11", "b.json", {"cost_usd": {}, "asknews_calls": 1})
+        g = self.guard(ASKNEWS_TOTAL_CALL_CAP="4")
+        self.assertEqual(g.asknews_calls_before, 3)
+        self.assertTrue(g.try_reserve_asknews_call())
+        self.assertFalse(g.try_reserve_asknews_call())
+        self.assertEqual(g.asknews_calls, 1)
+        write(self.ledger, "2026-11", "c.json", {"cost_usd": {}, "asknews_calls": -1})
+        with self.assertRaises(LedgerError):
+            self.guard()
+
     def test_previous_month(self):
         self.assertEqual(previous_month("2026-01"), "2025-12")
         self.assertEqual(previous_month("2026-11"), "2026-10")

@@ -42,6 +42,10 @@ BUDGET_ENV = {"anthropic": "CLAUDE_MONTHLY_BUDGET_PER_KEY_USD", "openai": "GPT_M
 DEFAULT_SOFT_RATIO = 0.70
 DEFAULT_HARD_RATIO = 0.90
 DEFAULT_RUN_COST_CAP_USD = 8.0
+# AskNews prepaid wallet ($15 granted by the owner). Pay-as-you-go: $0.025/credit (latest-news
+# search = 1 credit) plus returned tokens at $5-12/M, i.e. roughly $0.03-0.09 per search.
+# 150 searches keeps the worst case near $13.5 of the $15.
+DEFAULT_ASKNEWS_TOTAL_CALL_CAP = 150
 # Charged when litellm cannot price a call (unknown model, missing usage).
 UNPRICED_CALL_CHARGE_USD = 0.50
 
@@ -121,6 +125,10 @@ def validate_record(data: Any) -> dict:
         raise LedgerError("cost_usd must map only known providers")
     if not all(_is_cost(v) for v in costs.values()):
         raise LedgerError("cost_usd values must be finite numbers in 0..1000")
+    for counter in ("asknews_calls", "research_failures", "unpriced_calls"):
+        value = data.get(counter, 0)
+        if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 100_000:
+            raise LedgerError(f"{counter} invalid")
     if not _is_cost(data.get("unknown_provider_cost_usd", 0.0)):
         raise LedgerError("unknown_provider_cost_usd invalid")
     slots = data.get("key_slot", {})
@@ -197,6 +205,15 @@ def load_month_spend_by_slot(ledger_dir: Path, month: str) -> dict[str, dict[str
     return spend
 
 
+def load_total_asknews_calls(ledger_dir: Path) -> int:
+    """AskNews searches across ALL months: the prepaid wallet does not reset monthly."""
+    runs = ledger_dir / "runs"
+    if not runs.is_dir():
+        return 0
+    months = sorted(d.name for d in runs.iterdir() if d.is_dir() and re.fullmatch(r"\d{4}-\d{2}", d.name))
+    return sum(int(r.get("asknews_calls", 0)) for m in months for r in _iter_records(ledger_dir, m))
+
+
 def load_submitted_keys(ledger_dir: Path, months: Iterable[str]) -> set[str]:
     """Question keys already submitted to a scored tournament (duplicate guard)."""
     keys: set[str] = set()
@@ -235,6 +252,9 @@ class BudgetGuard:
     run_spend: dict[str, float] = field(default_factory=lambda: {p: 0.0 for p in PROVIDERS})
     unpriced_calls: int = 0
     research_failures: int = 0
+    asknews_calls: int = 0  # this run
+    asknews_calls_before: int = 0  # all earlier runs, all months
+    asknews_call_cap: int = DEFAULT_ASKNEWS_TOTAL_CALL_CAP
     unknown_provider_cost: float = 0.0
     cost_by_slot: dict[str, dict[str, float]] = field(default_factory=lambda: {p: {} for p in PROVIDERS})
     key_slot: Any = None  # callable(provider) -> active 1-based key slot
@@ -264,7 +284,10 @@ class BudgetGuard:
             raise LedgerError(f"Ledger directory {ledger_dir} is missing (REQUIRE_LEDGER=true)")
         spend = load_month_spend(ledger_dir, month)
         slot_spend = load_month_spend_by_slot(ledger_dir, month)
-        return cls(ledger_dir, mode, month, budgets, spend, slot_spend, soft, hard, run_cap)
+        guard = cls(ledger_dir, mode, month, budgets, spend, slot_spend, soft, hard, run_cap)
+        guard.asknews_call_cap = int(_env_float(e, "ASKNEWS_TOTAL_CALL_CAP", DEFAULT_ASKNEWS_TOTAL_CALL_CAP, 0, 100_000))
+        guard.asknews_calls_before = load_total_asknews_calls(ledger_dir)
+        return guard
 
     def attach_key_pools(self, pools: dict) -> None:
         """Use api_keys.KeyPool objects: per-key budgets, slot tracking and proactive switching."""
@@ -392,6 +415,14 @@ class BudgetGuard:
             raise BudgetExceeded(f"Run cost ${self.run_total():.2f} reached cap ${self.run_cost_cap:.2f}; refusing {what}")
 
     # --------------------------------------------------------------- reporting
+    def try_reserve_asknews_call(self) -> bool:
+        """Count one AskNews search if the lifetime cap allows it."""
+        with self._lock:
+            if self.asknews_calls_before + self.asknews_calls >= self.asknews_call_cap:
+                return False
+            self.asknews_calls += 1
+            return True
+
     def note_research_failure(self) -> None:
         with self._lock:
             self.research_failures += 1
@@ -418,6 +449,10 @@ class BudgetGuard:
                 for s in range(1, self.key_counts[p] + 1)
             )
             lines.append(f"    active key {self._slot(p)}; month per key: {per_key}")
+        lines.append(
+            f"  AskNews searches: this run {self.asknews_calls}, total "
+            f"{self.asknews_calls_before + self.asknews_calls} / cap {self.asknews_call_cap}"
+        )
         if self.research_failures:
             lines.append(f"  WARNING: research failed {self.research_failures} time(s); forecasted without news")
         if self.unpriced_calls:
@@ -442,6 +477,7 @@ class BudgetGuard:
             "unknown_provider_cost_usd": round(self.unknown_provider_cost, 6),
             "unpriced_calls": self.unpriced_calls,
             "research_failures": self.research_failures,
+            "asknews_calls": self.asknews_calls,
             "key_slot": {p: self._slot(p) for p in PROVIDERS},
             "cost_by_key_slot": {p: {k: round(v, 6) for k, v in self.cost_by_slot[p].items()} for p in PROVIDERS},
             "questions": list(self.questions.values()),
