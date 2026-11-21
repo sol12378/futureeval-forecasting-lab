@@ -6,7 +6,7 @@ on:
     - cron: "7,27,47 * * * *"
 
 permissions:
-  contents: write # only to append spend records to the ops-ledger branch
+  contents: read # the forecasting job is read-only; save_ledger below gets write
 
 concurrency:
   group: futureeval-prod
@@ -38,6 +38,8 @@ jobs:
       REQUIRE_LEDGER: "true"
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -52,6 +54,42 @@ jobs:
         run: uv sync --locked
       - name: Forecast FutureEval and MiniBench
         run: uv run python main.py --mode tournament
-      - name: Save spend ledger
+      - name: Collect new ledger records
         if: always()
-        run: bash scripts/ledger.sh push
+        run: bash scripts/ledger.sh collect ledger_out
+      - name: Upload new ledger records
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ledger-records
+          path: ledger_out/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # Separate, minimal job: the only one holding a write token. It checks out this repo,
+  # validates the records produced above and appends them to the ops-ledger branch.
+  # No third-party Python packages or LLM code run here.
+  save_ledger:
+    needs: forecast_job
+    if: ${{ always() && needs.forecast_job.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      LEDGER_DIR: ops_ledger
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download new ledger records
+        id: download
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: ledger-records
+          path: ledger_in
+      - name: Append records to ops-ledger
+        if: ${{ steps.download.outcome == 'success' }}
+        run: |
+          bash scripts/ledger.sh pull
+          bash scripts/ledger.sh ingest ledger_in
+          bash scripts/ledger.sh push

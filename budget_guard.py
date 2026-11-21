@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -248,7 +249,10 @@ class BudgetGuard:
         with self._lock:
             entry = {"key": key, "url": url, "status": status}
             if error:
-                entry["error"] = error[:300]
+                # Public ledger: keep only a short identifier such as an exception class name.
+                head = (error.split(":", 1)[0].split() or [""])[0]
+                is_identifier = re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]{0,79}", head) is not None
+                entry["error"] = head if is_identifier else "Error"
             self.questions[key] = entry
 
     def summary_lines(self) -> list[str]:

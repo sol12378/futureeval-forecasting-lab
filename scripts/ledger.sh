@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # Sync the append-only spend ledger kept on the `ops-ledger` branch.
-#   pull: check the branch out into $LEDGER_DIR (fails if the branch is missing -> fail closed)
-#   push: commit new run records and push, retrying on races with other runs
+#   pull           check the branch out into $LEDGER_DIR (fails if missing -> fail closed)
+#   collect OUT    copy run records created by this job into OUT/ (for upload as an artifact)
+#   ingest IN      validate records from IN/ and copy them into $LEDGER_DIR
+#   push           commit new run records and push, retrying on races with other runs
+# The forecasting job only needs pull+collect (read-only token). A separate job with
+# contents:write runs pull+ingest+push and never installs third-party Python packages.
 set -euo pipefail
 DIR="${LEDGER_DIR:-ops_ledger}"
 BRANCH="${LEDGER_BRANCH:-ops-ledger}"
@@ -11,6 +15,33 @@ case "${1:-}" in
     git fetch --no-tags origin "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}"
     git worktree add --detach "$DIR" "origin/${BRANCH}"
     echo "Ledger loaded: $(find "$DIR/runs" -name '*.json' 2>/dev/null | wc -l | tr -d ' ') record(s)"
+    ;;
+  collect)
+    OUT="${2:?usage: collect OUTDIR}"
+    mkdir -p "$OUT"
+    [ -d "$DIR" ] || { echo "No ledger checkout"; exit 0; }
+    (cd "$DIR" && git ls-files --others --exclude-standard -- runs) | while IFS= read -r f; do
+      mkdir -p "$OUT/$(dirname "$f")"
+      cp "$DIR/$f" "$OUT/$f"
+      echo "collected $f"
+    done
+    ;;
+  ingest)
+    IN="${2:?usage: ingest INDIR}"
+    [ -d "$IN/runs" ] || { echo "No records to ingest"; exit 0; }
+    find "$IN/runs" -type f | while IFS= read -r src; do
+      rel="${src#"$IN"/}"
+      # Only runs/YYYY-MM/<safe-name>.json is accepted, and it must be valid JSON with a cost map.
+      if ! printf '%s' "$rel" | grep -Eq '^runs/[0-9]{4}-[0-9]{2}/[A-Za-z0-9._-]+\.json$'; then
+        echo "REJECTED path: $rel"; exit 1
+      fi
+      python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert isinstance(d.get("cost_usd"), dict)' "$src" \
+        || { echo "REJECTED content: $rel"; exit 1; }
+      if [ -e "$DIR/$rel" ]; then echo "REJECTED overwrite: $rel"; exit 1; fi
+      mkdir -p "$DIR/$(dirname "$rel")"
+      cp "$src" "$DIR/$rel"
+      echo "ingested $rel"
+    done
     ;;
   push)
     if [ ! -d "$DIR" ]; then echo "No ledger checkout; nothing to push"; exit 0; fi
@@ -29,5 +60,5 @@ case "${1:-}" in
     done
     echo "LEDGER_PUSH_FAILED"; exit 1
     ;;
-  *) echo "usage: $0 pull|push"; exit 2 ;;
+  *) echo "usage: $0 pull|collect OUT|ingest IN|push"; exit 2 ;;
 esac

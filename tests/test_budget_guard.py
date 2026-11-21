@@ -117,6 +117,13 @@ class BudgetGuardTests(unittest.TestCase):
         t.write_record(now=NOW.replace(minute=5))
         self.assertEqual(load_submitted_keys(self.ledger, ["2026-11"]), {"101:201"})
 
+    def test_public_ledger_error_is_identifier_only(self):
+        g = self.guard()
+        g.note_question("1:2", None, "failed", "AuthenticationError: invalid x-api-key sk-ant-abc123 for request")
+        self.assertEqual(g.questions["1:2"]["error"], "AuthenticationError")
+        g.note_question("3:4", None, "failed", "sk-ant-abc123 leaked")
+        self.assertEqual(g.questions["3:4"]["error"], "Error")
+
     def test_previous_month(self):
         self.assertEqual(previous_month("2026-01"), "2025-12")
         self.assertEqual(previous_month("2026-11"), "2026-10")

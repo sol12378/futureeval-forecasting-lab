@@ -730,15 +730,17 @@ class GuardedBot(FallTemplateBot2026):
         key = question_key(question)
         try:
             self._guard(f"question {question.page_url}")
-        except BudgetExceeded as exc:
+        except BudgetExceeded:
             if guard is not None:
-                guard.note_question(key, question.page_url, "skipped_budget", str(exc))
+                guard.note_question(key, question.page_url, "skipped_budget", "BudgetExceeded")
             raise
         try:
             report = await super()._run_individual_question(question)
         except Exception as exc:
+            # The ledger branch is public: record only the exception type, never its message
+            # (provider error text could echo request details). Full errors stay in the run log.
             if guard is not None:
-                guard.note_question(key, question.page_url, "failed", f"{type(exc).__name__}: {exc}")
+                guard.note_question(key, question.page_url, "failed", type(exc).__name__)
             raise
         if guard is not None:
             status = "submitted" if self.publish_reports_to_metaculus else "dry_run"
