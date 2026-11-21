@@ -234,6 +234,7 @@ class BudgetGuard:
     run_cost_cap: float = DEFAULT_RUN_COST_CAP_USD
     run_spend: dict[str, float] = field(default_factory=lambda: {p: 0.0 for p in PROVIDERS})
     unpriced_calls: int = 0
+    research_failures: int = 0
     unknown_provider_cost: float = 0.0
     cost_by_slot: dict[str, dict[str, float]] = field(default_factory=lambda: {p: {} for p in PROVIDERS})
     key_slot: Any = None  # callable(provider) -> active 1-based key slot
@@ -391,6 +392,10 @@ class BudgetGuard:
             raise BudgetExceeded(f"Run cost ${self.run_total():.2f} reached cap ${self.run_cost_cap:.2f}; refusing {what}")
 
     # --------------------------------------------------------------- reporting
+    def note_research_failure(self) -> None:
+        with self._lock:
+            self.research_failures += 1
+
     def note_question(self, key: str, url: str | None, status: str, error: str | None = None) -> None:
         with self._lock:
             entry = {"key": key, "url": url, "status": status}
@@ -413,6 +418,8 @@ class BudgetGuard:
                 for s in range(1, self.key_counts[p] + 1)
             )
             lines.append(f"    active key {self._slot(p)}; month per key: {per_key}")
+        if self.research_failures:
+            lines.append(f"  WARNING: research failed {self.research_failures} time(s); forecasted without news")
         if self.unpriced_calls:
             lines.append(f"  WARNING: {self.unpriced_calls} unpriced call(s) charged conservatively")
         if self.unknown_provider_cost:
@@ -434,6 +441,7 @@ class BudgetGuard:
             "cost_usd": {p: round(self.run_spend[p], 6) for p in PROVIDERS},
             "unknown_provider_cost_usd": round(self.unknown_provider_cost, 6),
             "unpriced_calls": self.unpriced_calls,
+            "research_failures": self.research_failures,
             "key_slot": {p: self._slot(p) for p in PROVIDERS},
             "cost_by_key_slot": {p: {k: round(v, 6) for k, v in self.cost_by_slot[p].items()} for p in PROVIDERS},
             "questions": list(self.questions.values()),

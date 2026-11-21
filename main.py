@@ -722,7 +722,17 @@ class GuardedBot(FallTemplateBot2026):
 
     async def run_research(self, question: MetaculusQuestion) -> str:
         self._guard(f"research for {question.page_url}")
-        return await super().run_research(question)
+        try:
+            return await super().run_research(question)
+        except BudgetExceeded:
+            raise
+        except Exception as exc:
+            # A news-search outage or exhausted search quota must not cost us the forecast:
+            # questions are open only ~3 hours and allow a single submission.
+            logger.warning("Research failed for %s (%s); forecasting without research", question.page_url, type(exc).__name__)
+            if self.budget_guard is not None:
+                self.budget_guard.note_research_failure()
+            return ""
 
     async def _make_prediction(self, question: MetaculusQuestion, research: str):
         self._guard(f"prediction for {question.page_url}")

@@ -52,6 +52,23 @@ class MainGuardTests(unittest.TestCase):
             self.assertEqual(self.main.run("tournament"), self.main.EXIT_CONFIG)
             client.assert_not_called()
 
+    def test_research_failure_falls_back_to_no_research(self):
+        from budget_guard import BudgetGuard
+
+        guard = BudgetGuard.from_env("tournament", {"LEDGER_DIR": self.tmp.name})
+        bot = self.main.GuardedBot(llms={"default": "x", "parser": "x", "summarizer": "x", "researcher": "no_research"})
+        bot.budget_guard = guard
+
+        class Q:
+            page_url = "https://example/9"
+
+        async def boom(_self, _q):
+            raise ConnectionError("asknews down")
+
+        with patch.object(self.main.FallTemplateBot2026, "run_research", boom):
+            self.assertEqual(asyncio.run(bot.run_research(Q())), "")
+        self.assertEqual(guard.research_failures, 1)
+
     def test_guarded_bot_skips_question_when_budget_exhausted(self):
         from budget_guard import BudgetExceeded, BudgetGuard
 
