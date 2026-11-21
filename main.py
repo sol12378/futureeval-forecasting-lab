@@ -779,7 +779,9 @@ class GuardedBot(FallTemplateBot2026):
 
     async def _distribution_with_tails(self, question, prompt: str, block: str, fmt: str, call):
         """Ask for 13 percentiles (fatter, explicit tails); fall back to the template's 6 on failure."""
-        expanded = _expand_percentile_block(prompt, block, fmt)
+        # Discrete questions (cdf_size != 201) failed validation with 13 points in testing: keep 6.
+        continuous = getattr(question, "cdf_size", 201) == 201
+        expanded = _expand_percentile_block(prompt, block, fmt) if continuous else None
         if expanded is not None:
             token = _PERCENTILE_SET.set(WIDE_PERCENTILES)
             try:
@@ -788,6 +790,8 @@ class GuardedBot(FallTemplateBot2026):
                 raise
             except Exception as exc:  # noqa: BLE001 - retry with the proven 6-point prompt
                 logger.warning("13-percentile forecast failed for %s (%s); retrying with 6", question.page_url, type(exc).__name__)
+                # Details only at INFO: production raises this logger to WARNING (public logs).
+                logger.info("13-percentile failure detail: %s", str(exc)[:500])
             finally:
                 _PERCENTILE_SET.reset(token)
         return await call(question, prompt)

@@ -199,7 +199,7 @@ class MainGuardTests(unittest.TestCase):
         from types import SimpleNamespace
 
         bot = self.main.GuardedBot(llms={"default": "x", "parser": "x", "summarizer": "x", "researcher": "no_research"})
-        q = SimpleNamespace(page_url="https://m/n", group_question_option=None)
+        q = SimpleNamespace(page_url="https://m/n", group_question_option=None, cdf_size=201)
         prompt = "intro\n" + self.main.NUMERIC_BLOCK + "\nend"
         seen = []
 
@@ -213,6 +213,11 @@ class MainGuardTests(unittest.TestCase):
         with patch.object(self.main.FallTemplateBot2026, "_numeric_prompt_to_forecast", fake):
             self.assertEqual(asyncio.run(bot._numeric_prompt_to_forecast(q, prompt)), "ok")
         self.assertEqual(seen, [(True, True), (False, False)])  # wide attempt, then 6-point fallback
+        seen.clear()
+        discrete = SimpleNamespace(page_url="https://m/d", group_question_option=None, cdf_size=11)
+        with patch.object(self.main.FallTemplateBot2026, "_numeric_prompt_to_forecast", fake):
+            asyncio.run(bot._numeric_prompt_to_forecast(discrete, prompt))
+        self.assertEqual(seen, [(False, False)])  # discrete: template 6 points directly
         self.assertIsNone(self.main._expand_percentile_block("changed template", self.main.NUMERIC_BLOCK, "XX"))
 
     def test_guarded_bot_skips_question_when_budget_exhausted(self):
