@@ -1,0 +1,103 @@
+{
+  "schema": 1,
+  "run_id": "44855138904",
+  "run_attempt": "1",
+  "mode": "test_questions",
+  "started_at": "2026-11-21T02:18:31.523211+00:00",
+  "finished_at": "2026-11-21T02:21:41.195815+00:00",
+  "cost_usd": {
+    "anthropic": 0.616032,
+    "openai": 0.056662
+  },
+  "unknown_provider_cost_usd": 0.0,
+  "unpriced_calls": 0,
+  "research_failures": 0,
+  "asknews_calls": 10,
+  "key_slot": {
+    "anthropic": 1,
+    "openai": 1
+  },
+  "cost_by_key_slot": {
+    "anthropic": {
+      "1": 0.616032
+    },
+    "openai": {
+      "1": 0.056662
+    }
+  },
+  "questions": [
+    {
+      "key": "46224:46451",
+      "url": "https://www.metaculus.com/questions/46224",
+      "status": "submitted"
+    },
+    {
+      "key": "46223:46450",
+      "url": "https://www.metaculus.com/questions/46223",
+      "status": "submitted"
+    },
+    {
+      "key": "45517:45708",
+      "url": "https://www.metaculus.com/questions/45517",
+      "status": "submitted"
+    },
+    {
+      "key": "43327:43332",
+      "url": "https://www.metaculus.com/questions/43327",
+      "status": "submitted"
+    },
+    {
+      "key": "43325:43330",
+      "url": "https://www.metaculus.com/questions/43325",
+      "status": "submitted"
+    },
+    {
+      "key": "43325:43329",
+      "url": "https://www.metaculus.com/questions/43325",
+      "status": "submitted"
+    },
+    {
+      "key": "43324:43326",
+      "url": "https://www.metaculus.com/questions/43324",
+      "status": "submitted"
+    },
+    {
+      "key": "43323:43325",
+      "url": "https://www.metaculus.com/questions/43323",
+      "status": "submitted"
+    },
+    {
+      "key": "43322:43324",
+      "url": "https://www.metaculus.com/questions/43322",
+      "status": "submitted"
+    },
+    {
+      "key": "43321:43322",
+      "url": "https://www.metaculus.com/questions/43321",
+      "status": "submitted"
+    }
+  ],
+  "models": {
+    "forecaster": "anthropic/claude-opus-5-5",
+    "parser": "openai/gpt-6.2-sol"
+  },
+  "keys_switched_from": {
+    "anthropic": [],
+    "openai": []
+  },
+  "asknews": true,
+  "predictions_per_report": 1,
+  "notes": [
+    "Bot Testing Area: open=10",
+    "VERIFIED on Metaculus: https://www.metaculus.com/questions/46224 (my latest forecast at 2026-11-21T02:19:14.457274+00:00)",
+    "VERIFIED (forecast flag only, no timestamp): https://www.metaculus.com/questions/46223",
+    "VERIFIED on Metaculus: https://www.metaculus.com/questions/45517 (my latest forecast at 2026-11-21T02:19:40.211457+00:00)",
+    "VERIFIED on Metaculus: https://www.metaculus.com/questions/43327 (my latest forecast at 2026-11-21T02:19:50.782459+00:00)",
+    "VERIFIED on Metaculus: https://www.metaculus.com/questions/43325 (my latest forecast at 2026-11-21T02:20:14.828434+00:00)",
+    "VERIFIED on Metaculus: https://www.metaculus.com/questions/43325 (my latest forecast at 2026-11-21T02:20:25.571738+00:00)",
+    "VERIFIED (forecast flag only, no timestamp): https://www.metaculus.com/questions/43324",
+    "VERIFIED on Metaculus: https://www.metaculus.com/questions/43323 (my latest forecast at 2026-11-21T02:21:05.416937+00:00)",
+    "VERIFIED on Metaculus: https://www.metaculus.com/questions/43322 (my latest forecast at 2026-11-21T02:21:19.739110+00:00)",
+    "VERIFIED on Metaculus: https://www.metaculus.com/questions/43321 (my latest forecast at 2026-11-21T02:21:32.146719+00:00)"
+  ]
+}
