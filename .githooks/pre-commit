@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Block secrets and personal data from ever entering this PUBLIC repository.
+# Enable once per clone:  bash scripts/install_hooks.sh
+set -euo pipefail
+exec bash "$(git rev-parse --show-toplevel)/scripts/privacy_check.sh" staged

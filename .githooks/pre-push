@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Re-check every commit about to be pushed (author/committer emails + secret scan).
+set -euo pipefail
+root="$(git rev-parse --show-toplevel)"
+zero="0000000000000000000000000000000000000000"
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+  [ "$local_sha" = "$zero" ] && continue  # branch deletion
+  if [ "$remote_sha" = "$zero" ]; then range="$local_sha --not --remotes"; else range="$remote_sha..$local_sha"; fi
+  bash "$root/scripts/privacy_check.sh" range $range
+done

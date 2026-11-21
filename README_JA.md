@@ -104,6 +104,20 @@ GitHub Actionsのジョブが失敗すると、リポジトリ所有者にメー
 
 実測の費用は台帳（`ops-ledger` ブランチ）とActionsのStep Summaryで確認できます。
 
+## 公開リポジトリの秘密・個人情報対策
+
+| 層 | 仕組み | 防ぐもの |
+|---|---|---|
+| コミット時 | `.githooks/pre-commit` → `scripts/privacy_check.sh staged` | gitleaksで検出される秘密、`.env`・鍵ファイル、noreply以外の作者メール、ローカル拒否リストの個人情報 |
+| push時 | `.githooks/pre-push` → 送信するコミット全件を再検査 | 同上（コミット済みの見落とし） |
+| GitHub | Secret scanning + Push protection（有効化済み） | 既知形式のAPIキーを含むpushをサーバー側で拒否 |
+| CI | `ci.yaml` の `privacy` ジョブ（gitleaksは版固定・sha256検証） | 新規コミットの秘密・作者メール・拒否リスト（Secret `PRIVACY_DENYLIST`）・ツリー全体 |
+| `.gitignore` | `.env.*`、鍵、認証情報JSONなど | 誤って追加するのを防ぐ |
+
+- 新しくcloneしたら `bash scripts/install_hooks.sh` を1回実行してください。
+- 個人情報（メール、氏名、電話番号など）は、このPCの `~/.config/futureeval-forecasting-lab/denylist.txt` に1行ずつ書きます。このファイルはリポジトリの外にあり、コミットされません。CIでも同じ検査をする場合は、同じ内容をSecret `PRIVACY_DENYLIST` に登録します。検出しても値は表示しません。
+- 台帳（`ops-ledger`）には費用・問題URL・状態だけを記録し、予測内容やエラー本文は記録しません。
+
 ## ルール上の注意
 
 - 開催中の問題について、人間が予測を修正することは禁止されています（Botの出力を見てBotを修正することも含みます）。

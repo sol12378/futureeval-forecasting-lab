@@ -177,3 +177,17 @@ temp/
 
 # Local checkout of the ops-ledger branch (spend records)
 ops_ledger/
+
+# Never commit secrets or local private data (this repository is public)
+.env.*
+!.env.template
+!.env.example*
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+credentials*.json
+*secret*.json
+denylist.txt
