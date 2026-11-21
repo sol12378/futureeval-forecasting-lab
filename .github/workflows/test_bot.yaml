@@ -6,6 +6,9 @@ on:
       plan:
         description: "Forecaster plan, e.g. claude,gpt (empty = repository default)"
         default: ""
+      research:
+        description: "Research sources, e.g. claude_web,gpt_web,asknews (empty = repository default)"
+        default: ""
 
 permissions:
   contents: read # the forecasting job is read-only; save_ledger below gets write
@@ -34,7 +37,7 @@ jobs:
       CLAUDE_FORECAST_EFFORT: ${{ vars.CLAUDE_FORECAST_EFFORT }}
       GPT_FORECAST_MODEL: ${{ vars.GPT_FORECAST_MODEL }}
       GPT_FORECAST_EFFORT: ${{ vars.GPT_FORECAST_EFFORT }}
-      RESEARCH_SOURCES: ${{ vars.RESEARCH_SOURCES }}
+      RESEARCH_SOURCES: ${{ inputs.research || vars.RESEARCH_SOURCES }}
       CLAUDE_RESEARCH_MODEL: ${{ vars.CLAUDE_RESEARCH_MODEL }}
       GPT_RESEARCH_MODEL: ${{ vars.GPT_RESEARCH_MODEL }}
       RESEARCH_REPORTS_PER_QUESTION: "1"
