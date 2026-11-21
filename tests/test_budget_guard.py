@@ -153,6 +153,23 @@ class BudgetGuardTests(unittest.TestCase):
         good.write_text('{"mode": "test_questions", "cost_usd": {"anthropic": NaN}}')
         self.assertEqual(_cli(["validate", str(good), current_month()]), 1)
 
+    def test_openai_slot_tracking_and_resume(self):
+        from budget_guard import load_last_openai_slot
+
+        g = self.guard()
+        slot = {"v": 1}
+        g.openai_slot = lambda: slot["v"]
+        g.record_llm_call({"model": "gpt-6.2-sol", "litellm_call_id": "a", "response_cost": 0.02}, None)
+        slot["v"] = 2
+        g.record_llm_call({"model": "gpt-6.2-sol", "litellm_call_id": "b", "response_cost": 0.03}, None)
+        self.assertEqual(g.openai_cost_by_slot, {"1": 0.02, "2": 0.03})
+        g.write_record(now=NOW)
+        self.assertEqual(load_last_openai_slot(self.ledger, "2026-11"), 2)
+        self.assertEqual(load_last_openai_slot(self.ledger, "2026-12"), 1)  # new month starts at key 1
+        write(self.ledger, "2026-11", "zz.json", {"cost_usd": {}, "openai_key_slot": 3})
+        with self.assertRaises(LedgerError):
+            load_last_openai_slot(self.ledger, "2026-11")
+
     def test_previous_month(self):
         self.assertEqual(previous_month("2026-01"), "2025-12")
         self.assertEqual(previous_month("2026-11"), "2026-10")

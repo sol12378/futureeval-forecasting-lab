@@ -11,6 +11,7 @@ from budget_guard import (
     BudgetGuard,
     LedgerError,
     current_month,
+    load_last_openai_slot,
     load_submitted_keys,
     previous_month,
     question_key,
@@ -18,10 +19,12 @@ from budget_guard import (
 from forecast_config import (
     build_llm_config,
     config_counts,
+    gpt_reasoning_effort,
     has_asknews,
     model_names,
     unpriced_models,
 )
+from openai_keys import OpenAIKeyPool
 
 import dotenv
 
@@ -789,6 +792,9 @@ def run(run_mode: str) -> int:
     try:
         guard = BudgetGuard.from_env(run_mode)
         research_count, prediction_count = config_counts()
+        gpt_effort = gpt_reasoning_effort()
+        # Start on the key slot the previous run this month ended on (slot 1 at month start).
+        key_pool = OpenAIKeyPool(start_slot=load_last_openai_slot(guard.ledger_dir, guard.month))
     except (LedgerError, ValueError) as exc:
         print(f"BUDGET_CONFIG_ERROR: {exc}")
         return EXIT_CONFIG
@@ -803,6 +809,8 @@ def run(run_mode: str) -> int:
     if level == "soft" and prediction_count > 1:
         print(f"BUDGET_SOFT_LIMIT: reducing predictions per research report {prediction_count} -> 1")
         prediction_count = 1
+    key_pool.activate()
+    guard.openai_slot = lambda: key_pool.slot
     guard.install()
 
     if run_mode != "test_questions" and os.getenv("LOG_FORECAST_DETAILS", "").lower() != "true":
@@ -814,7 +822,8 @@ def run(run_mode: str) -> int:
     publish_to_metaculus = True
     print_startup_banner(run_mode, will_publish=publish_to_metaculus)
     print(
-        f"Models: forecaster={claude_model}, parser/summarizer={gpt_model}, "
+        f"Models: forecaster={claude_model}, parser/summarizer={gpt_model} (reasoning={gpt_effort}), "
+        f"OpenAI keys configured={key_pool.size}, starting slot={key_pool.slot}, "
         f"research={'AskNews' if has_asknews() else 'NONE (AskNews not configured)'}, "
         f"research_reports={research_count}, predictions_per_report={prediction_count}"
     )
@@ -827,7 +836,9 @@ def run(run_mode: str) -> int:
         folder_to_save_reports_to=None,
         skip_previously_forecasted_questions=True,
         extra_metadata_in_explanation=True,
-        llms=build_llm_config(),
+        # The summary is not used for forecasting (use_research_summary_to_forecast=False); skip its cost.
+        enable_summarize_research=False,
+        llms=build_llm_config(openai_key_pool=key_pool),
     )
     bot.budget_guard = guard
 
@@ -892,6 +903,7 @@ def run(run_mode: str) -> int:
         record_path = "(idle run: no record written)" if idle else guard.write_record(
             {
                 "models": {"forecaster": claude_model, "parser": gpt_model},
+                "openai_keys_switched_from": key_pool.switched_from,
                 "asknews": has_asknews(),
                 "predictions_per_report": prediction_count,
                 "notes": notes,

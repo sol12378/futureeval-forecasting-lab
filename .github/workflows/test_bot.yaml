@@ -22,10 +22,12 @@ jobs:
       METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_API_KEY_2: ${{ secrets.OPENAI_API_KEY_2 }} # optional: used after key 1 runs out of credit
       ASKNEWS_CLIENT_ID: ${{ secrets.ASKNEWS_CLIENT_ID }}
       ASKNEWS_SECRET: ${{ secrets.ASKNEWS_SECRET }}
       CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL }}
       GPT_MODEL: ${{ vars.GPT_MODEL }}
+      GPT_REASONING_EFFORT: ${{ vars.GPT_REASONING_EFFORT }}
       RESEARCH_REPORTS_PER_QUESTION: "1"
       PREDICTIONS_PER_RESEARCH_REPORT: ${{ inputs.predictions || '1' }}
       CLAUDE_MONTHLY_BUDGET_USD: ${{ vars.CLAUDE_MONTHLY_BUDGET_USD || '200' }}

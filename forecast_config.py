@@ -9,8 +9,11 @@ import os
 
 # Claude Opus 5.5 ($4 / $20 per MTok). Thinking is always on; effort defaults to medium.
 DEFAULT_CLAUDE_MODEL = "anthropic/claude-opus-5-5"
-# GPT-5.4 mini ($0.75 / $4.50 per MTok) for parsing text into structured predictions.
-DEFAULT_GPT_MODEL = "openai/gpt-5.4-mini"
+# GPT-6.2 Sol ($2 / $10 per MTok): OpenAI's current balanced flagship, used at low
+# reasoning effort to turn Claude's free-text forecast into validated structured output.
+DEFAULT_GPT_MODEL = "openai/gpt-6.2-sol"
+DEFAULT_GPT_REASONING_EFFORT = "low"
+GPT_REASONING_EFFORTS = ("none", "low", "medium", "high", "xhigh", "max")
 
 REQUIRED_SECRETS = ("METACULUS_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY")
 _PLACEHOLDERS = {"REPLACE_ME", "your-token-here", "your-api-key-here", "1234567890"}
@@ -51,6 +54,14 @@ def model_names(env: dict | None = None) -> tuple[str, str]:
     return (_env(e, "CLAUDE_MODEL") or DEFAULT_CLAUDE_MODEL, _env(e, "GPT_MODEL") or DEFAULT_GPT_MODEL)
 
 
+def gpt_reasoning_effort(env: dict | None = None) -> str:
+    e = os.environ if env is None else env
+    effort = _env(e, "GPT_REASONING_EFFORT") or DEFAULT_GPT_REASONING_EFFORT
+    if effort not in GPT_REASONING_EFFORTS:
+        raise ValueError(f"GPT_REASONING_EFFORT must be one of {GPT_REASONING_EFFORTS}")
+    return effort
+
+
 def unpriced_models(models: tuple[str, ...]) -> list[str]:
     """Models litellm cannot price. The budget guard would have to guess, so refuse them."""
     import litellm
@@ -63,7 +74,7 @@ def unpriced_models(models: tuple[str, ...]) -> list[str]:
     return missing
 
 
-def build_llm_config(env: dict | None = None):
+def build_llm_config(env: dict | None = None, openai_key_pool=None):
     e = os.environ if env is None else env
     missing = [k for k, ok in required_credentials_present(e).items() if not ok]
     if missing:
@@ -73,11 +84,26 @@ def build_llm_config(env: dict | None = None):
     from forecasting_tools import GeneralLlm
 
     claude_model, gpt_model = model_names(e)
+    gpt_kwargs = dict(
+        model=gpt_model,
+        temperature=None,
+        timeout=120,
+        allowed_tries=2,
+        reasoning_effort=gpt_reasoning_effort(e),
+    )
+    if openai_key_pool is not None:
+        from openai_keys import make_failover_llm
+
+        parser = make_failover_llm(openai_key_pool, **gpt_kwargs)
+        summarizer = make_failover_llm(openai_key_pool, **gpt_kwargs)
+    else:
+        parser = GeneralLlm(**gpt_kwargs)
+        summarizer = GeneralLlm(**gpt_kwargs)
     return {
         # temperature=None: current Claude/GPT reasoning models reject sampling params.
         "default": GeneralLlm(model=claude_model, temperature=None, timeout=300, allowed_tries=2, max_tokens=16000),
-        "parser": GeneralLlm(model=gpt_model, temperature=None, timeout=120, allowed_tries=2),
-        "summarizer": GeneralLlm(model=gpt_model, temperature=None, timeout=120, allowed_tries=2),
+        "parser": parser,
+        "summarizer": summarizer,
         # Without AskNews there is intentionally NO live research (no fake "web search").
         "researcher": "asknews/news-summaries" if has_asknews(e) else "no_research",
     }

@@ -5,7 +5,7 @@ FutureEval Fall 2026（project `33121` / `fall-futureeval-2026`）とMiniBench�
 人手を介さない完全自律運用で予測と根拠コメントを提出します。
 
 - 主予測：Claude Opus 5.5（`anthropic/claude-opus-5-5`）
-- 構造化出力の解析・要約：GPT-5.4 mini（`openai/gpt-5.4-mini`）
+- 構造化出力の解析：GPT-6.2 Sol（`openai/gpt-6.2-sol`、推論effort=low）。OpenAIキーは1本目のクレジットが切れたら2本目に自動で切り替え
 - 最新ニュース：AskNews（未設定の場合はリサーチなし。LLMに架空の「Web検索」をさせることはしない）
 - 実行基盤：GitHub Actions（Publicリポジトリのため無料枠）、20分間隔
 
@@ -23,6 +23,8 @@ FutureEval Fall 2026（project `33121` / `fall-futureeval-2026`）とMiniBench�
 | `.github/workflows/ci.yaml` | Secretsを使わないオフライン検査（単体テスト・コンパイル） |
 
 ## 安全装置
+
+0. **OpenAIキーの切り替え**：1本目が「クレジット切れ」（`insufficient_quota` など）を返したときだけ2本目に切り替えます。レート制限や無効なキーでは切り替えず、失敗として通知します。月内は前回の実行が終わったキー枠から再開し、月が替わると1本目に戻ります。キー枠ごとの使用額は台帳の `openai_cost_by_key_slot` に記録されます（キーの値は記録しません）。
 
 1. **本番提出のスイッチ**：リポジトリ変数 `ENABLE_LIVE_FORECASTS` が `true` でない限り、本番ジョブはスキップされます。`main.py` 側でも同じ値を確認します（二重チェック）。
 2. **重複提出の防止**（大会は1問につき1回のみ提出可）：Metaculus側の `already_forecasted` に加え、台帳に「提出済み」とある問題も除外します。両者が食い違った場合は提出せず、ジョブを失敗させて通知します（終了コード5）。
@@ -46,13 +48,15 @@ GitHub Actionsのジョブが失敗すると、リポジトリ所有者にメー
 |---|---|---|
 | Secret | `METACULUS_TOKEN` | Botアカウントのトークン |
 | Secret | `ANTHROPIC_API_KEY` | Claude用 |
-| Secret | `OPENAI_API_KEY` | GPT用 |
+| Secret | `OPENAI_API_KEY` | GPT用（1本目。最初に使う） |
+| Secret（任意） | `OPENAI_API_KEY_2` | GPT用（2本目。1本目がクレジット切れ `insufficient_quota` になったときだけ使う） |
 | Secret（任意・推奨） | `ASKNEWS_CLIENT_ID` / `ASKNEWS_SECRET` | AskNews（Bot参加者は無料枠あり） |
 | Variable | `ENABLE_LIVE_FORECASTS` | テストに合格してから `true` にする |
 | Variable（任意） | `PREDICTIONS_PER_RESEARCH_REPORT` | 本番の予測回数。既定は3、最大5 |
 | Variable（任意） | `CLAUDE_MONTHLY_BUDGET_USD` / `GPT_MONTHLY_BUDGET_USD` | 既定は200 / 100 |
 | Variable（任意） | `BUDGET_SOFT_RATIO` / `BUDGET_HARD_RATIO` / `RUN_COST_CAP_USD` | 既定は0.70 / 0.90 / 8 |
 | Variable（任意） | `CLAUDE_MODEL` / `GPT_MODEL` | モデルの差し替え（litellmで料金を計算できるモデルに限る） |
+| Variable（任意） | `GPT_REASONING_EFFORT` | GPTの推論量。既定 `low`（none/low/medium/high/xhigh/max） |
 
 ## 運用手順
 
@@ -70,18 +74,18 @@ GitHub Actionsのジョブが失敗すると、リポジトリ所有者にメー
 
 **1問あたりの費用（予測1回あたり）**
 - Claude Opus 5.5（$4 / $20 per MTok）：入力3k〜6k、出力（思考を含む）2k〜6k tokens → 約$0.05〜0.15（中央値$0.10）
-- GPT-5.4 mini（$0.75 / $4.50 per MTok）：構造化の検証2回 → 約$0.01
+- GPT-6.2 Sol（$2 / $10 per MTok、effort=low）：構造化の検証2回 → 約$0.02
 
 | 予測回数/問 | Claude 月額 | GPT 月額 |
 |---|---|---|
-| 1 | 約$25 | 約$3 |
-| **3（初期設定）** | **約$75** | **約$8** |
-| 5 | 約$125 | 約$13 |
+| 1 | 約$25 | 約$5 |
+| **3（初期設定）** | **約$75** | **約$15** |
+| 5 | 約$125 | 約$25 |
 
 | 資源 | 月の枠 | 配分 |
 |---|---|---|
 | Anthropic | $200 | 本番$75前後、テスト・開発$15、残りは予備。$140（70%）で節約モード、$180（90%）で停止 |
-| OpenAI | $100 | パーサ$8。初回投稿後にGPTの独立予測（アンサンブル）$30〜50、終了済み問題の評価$10〜15。$70で節約、$90で停止 |
+| OpenAI | $100（キー2本の合計） | パーサ$15前後。初回投稿後にGPTの独立予測（アンサンブル）$30〜50、終了済み問題の評価$10〜15。$70で節約、$90で停止 |
 | AskNews | 無料：月1,000回、大会全体で4,000回 | 1問あたり最新ニュース1回（1 call）で、月約250回 |
 | GitHub Actions | Publicリポジトリのため無料 | 20分ごと、1回あたり約1〜3分 |
 

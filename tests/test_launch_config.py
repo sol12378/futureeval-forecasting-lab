@@ -51,12 +51,26 @@ class ModelSelectionTests(unittest.TestCase):
             d = build_llm_config(creds)
             self.assertEqual(d["default"].params["model"], "anthropic/claude-opus-5-5")
             self.assertIsNone(d["default"].params["temperature"])
-            self.assertEqual(d["parser"].params["model"], "openai/gpt-5.4-mini")
+            self.assertEqual(d["parser"].params["model"], "openai/gpt-6.2-sol")
+            self.assertEqual(d["parser"].params["reasoning_effort"], "low")
             self.assertEqual(d["researcher"], "no_research")
             creds.update(ASKNEWS_CLIENT_ID="id", ASKNEWS_SECRET="secret", CLAUDE_MODEL="anthropic/claude-sonnet-5-5")
             d = build_llm_config(creds)
             self.assertEqual(d["researcher"], "asknews/news-summaries")
             self.assertEqual(d["default"].params["model"], "anthropic/claude-sonnet-5-5")
+
+    def test_reasoning_effort_validation(self):
+        from forecast_config import gpt_reasoning_effort
+
+        self.assertEqual(gpt_reasoning_effort({}), "low")
+        self.assertEqual(gpt_reasoning_effort({"GPT_REASONING_EFFORT": "medium"}), "medium")
+        with self.assertRaises(ValueError):
+            gpt_reasoning_effort({"GPT_REASONING_EFFORT": "turbo"})
+
+    def test_default_models_are_priced(self):
+        from forecast_config import DEFAULT_CLAUDE_MODEL, DEFAULT_GPT_MODEL, unpriced_models
+
+        self.assertEqual(unpriced_models((DEFAULT_CLAUDE_MODEL, DEFAULT_GPT_MODEL)), [])
 
     def test_missing_secret_raises(self):
         with self.assertRaises(RuntimeError):
