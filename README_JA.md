@@ -104,6 +104,18 @@ GitHub Actionsのジョブが失敗すると、リポジトリ所有者にメー
 
 実測の費用は台帳（`ops-ledger` ブランチ）とActionsのStep Summaryで確認できます。
 
+## 自動運用のしくみ（2026-11-21〜）
+
+| ワークフロー | 役割 |
+|---|---|
+| `Scheduler (20-min trigger, fork-safe)` | フォークでは `schedule` が発火しないため、約5.5時間動き続けて20分ごとに本番を起動し、終了前に次の自分を起動してリレーする。停止は `ENABLE_LIVE_FORECASTS=false` または実行のキャンセル、再開は手動実行 |
+| `Forecast on new AI tournament questions` | 本番。FutureEval本大会とMiniBenchの新着問題を予測・提出 |
+| `Coverage audit` | スケジューラの各リレーの開始時に実行。公開から60分以上たっても予測していない問題があれば失敗（メール通知） |
+| `Research sources self-check` | 手動。Tavily/Exa/予測市場/FRED/CoinGeckoの疎通と内容を固定の質問で確認 |
+| `Test Bot` | 手動。Bot Testing Areaで予測（`plan`/`research`を指定して構成を試せる） |
+
+予測の構成（既定）：リサーチは Claude Web検索・GPT Web検索・Tavily・Exa・予測市場・公式データ（FRED/CoinGecko）を並列実行。予測は Claude Opus 5.5（effort=xhigh）×3 と GPT-6.2 Sol（reasoning=high）×3 の中央値。数値・日付問題は13パーセンタイル（2.5〜97.5）、失点防止の注意書き、多肢選択の最低1%を適用。
+
 ## 公開リポジトリの秘密・個人情報対策
 
 | 層 | 仕組み | 防ぐもの |
