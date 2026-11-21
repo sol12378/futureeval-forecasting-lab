@@ -59,6 +59,7 @@ class MainGuardTests(unittest.TestCase):
         guard = BudgetGuard.from_env("tournament", {"LEDGER_DIR": self.tmp.name})
         bot = self.main.GuardedBot(llms={"default": "x", "parser": "x", "summarizer": "x", "researcher": "no_research"})
         bot.budget_guard = guard
+        bot.research_sources = ("asknews",)
 
         class Q:
             page_url = "https://example/9"
@@ -96,6 +97,7 @@ class MainGuardTests(unittest.TestCase):
         bot = self.main.GuardedBot(llms={"default": "x", "parser": "x", "summarizer": "x",
                                          "researcher": "asknews/news-summaries"})
         bot.budget_guard = guard
+        bot.research_sources = ("asknews",)
 
         class Q:
             page_url = "https://example/7"
@@ -114,6 +116,48 @@ class MainGuardTests(unittest.TestCase):
         msg = bot._create_single_distribution_parsing_message(SimpleNamespace(group_question_option=None))
         self.assertIn("10, 20, 40, 60, 80 and 90", msg)
         self.assertIn("Ignore any other percentiles", msg)
+
+    def test_ensemble_round_robin_routes_default_llm(self):
+        from types import SimpleNamespace
+
+        bot = self.main.GuardedBot(llms={"default": "claude-x", "gpt_forecaster": "gpt-x", "parser": "x",
+                                         "summarizer": "x", "researcher": "no_research"})
+        bot.forecaster_plan = ("claude", "gpt", "claude")
+        seen = []
+
+        async def fake_make(_self, question, research):
+            seen.append(_self.get_llm("default"))
+            return "ok"
+
+        q = SimpleNamespace(id_of_post=5, id_of_question=6, page_url="https://m/5")
+        with patch.object(self.main.FallTemplateBot2026, "_make_prediction", fake_make):
+            for _ in range(4):
+                asyncio.run(bot._make_prediction(q, ""))
+        self.assertEqual(seen, ["claude-x", "gpt-x", "claude-x", "claude-x"])
+        self.assertEqual(bot.get_llm("default"), "claude-x")  # outside a slot -> Claude
+
+    def test_research_merges_sources_and_tolerates_failures(self):
+        from types import SimpleNamespace
+
+        from budget_guard import BudgetGuard
+
+        guard = BudgetGuard.from_env("tournament", {"LEDGER_DIR": self.tmp.name})
+        bot = self.main.GuardedBot(llms={"default": "x", "parser": "x", "summarizer": "x", "researcher": "no_research"})
+        bot.budget_guard = guard
+        bot.research_sources = ("claude_web", "gpt_web", "asknews")
+
+        async def fake_with(_self, source, question):
+            if source == "gpt_web":
+                raise TimeoutError("slow")
+            return f"facts from {source}"
+
+        q = SimpleNamespace(page_url="https://m/8")
+        with patch.object(self.main.GuardedBot, "_research_with", fake_with):
+            text = asyncio.run(bot.run_research(q))
+        self.assertIn("Web research (Claude)", text)
+        self.assertIn("News (AskNews)", text)
+        self.assertNotIn("GPT", text)
+        self.assertEqual(guard.research_failures, 1)
 
     def test_guarded_bot_skips_question_when_budget_exhausted(self):
         from budget_guard import BudgetExceeded, BudgetGuard

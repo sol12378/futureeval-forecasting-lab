@@ -235,6 +235,17 @@ class BudgetGuardTests(unittest.TestCase):
             with self.assertRaises(ValueError, msg=bad):
                 self.guard(GPT_MONTHLY_BUDGET_PER_KEY_USD=bad)
 
+    def test_web_search_fees_are_added(self):
+        from types import SimpleNamespace
+
+        g = self.guard()
+        openai_resp = SimpleNamespace(output=[{"type": "web_search_call"}, {"type": "message"}, SimpleNamespace(type="web_search_call")])
+        g.record_llm_call({"model": "gpt-6.2-sol", "litellm_call_id": "w1", "response_cost": 0.05}, openai_resp)
+        self.assertAlmostEqual(g.run_spend["openai"], 0.07)
+        anthropic_resp = SimpleNamespace(usage=SimpleNamespace(server_tool_use=SimpleNamespace(web_search_requests=3)))
+        g.record_llm_call({"model": "claude-sonnet-5-5", "litellm_call_id": "w2", "response_cost": 0.10}, anthropic_resp)
+        self.assertAlmostEqual(g.run_spend["anthropic"], 0.13)
+
     def test_previous_month(self):
         self.assertEqual(previous_month("2026-01"), "2025-12")
         self.assertEqual(previous_month("2026-11"), "2026-10")

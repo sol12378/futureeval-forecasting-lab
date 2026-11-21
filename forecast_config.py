@@ -15,6 +15,22 @@ DEFAULT_GPT_MODEL = "openai/gpt-6.2-sol"
 DEFAULT_GPT_REASONING_EFFORT = "low"
 GPT_REASONING_EFFORTS = ("none", "low", "medium", "high", "xhigh", "max")
 
+# Ensemble + research defaults (each overridable with a repository variable of the same name).
+DEFAULTS = {
+    # Who makes each of the N predictions per question (median-aggregated by forecasting-tools).
+    "FORECASTER_PLAN": "claude,claude,claude,gpt,gpt",
+    "CLAUDE_FORECAST_EFFORT": "high",
+    "GPT_FORECAST_MODEL": "openai/gpt-6.2-sol",
+    "GPT_FORECAST_EFFORT": "high",
+    # Research sources run in parallel; their findings are concatenated for every forecaster.
+    "RESEARCH_SOURCES": "claude_web,gpt_web,asknews",
+    "CLAUDE_RESEARCH_MODEL": "anthropic/claude-sonnet-5-5",
+    "GPT_RESEARCH_MODEL": "openai/gpt-6.2-sol",
+}
+FORECASTERS = ("claude", "gpt")
+RESEARCH_SOURCES = ("claude_web", "gpt_web", "asknews")
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
+
 REQUIRED_SECRETS = ("METACULUS_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY")
 _PLACEHOLDERS = {"REPLACE_ME", "your-token-here", "your-api-key-here", "1234567890"}
 
@@ -57,6 +73,41 @@ def config_counts(env: dict | None = None) -> tuple[int, int]:
 def model_names(env: dict | None = None) -> tuple[str, str]:
     e = os.environ if env is None else env
     return (_env(e, "CLAUDE_MODEL") or DEFAULT_CLAUDE_MODEL, _env(e, "GPT_MODEL") or DEFAULT_GPT_MODEL)
+
+
+def setting(env, name: str) -> str:
+    return _env(env, name) or DEFAULTS[name]
+
+
+def forecaster_plan(env: dict | None = None) -> list[str]:
+    e = os.environ if env is None else env
+    plan = [part.strip() for part in setting(e, "FORECASTER_PLAN").split(",") if part.strip()]
+    if not 1 <= len(plan) <= 7 or any(p not in FORECASTERS for p in plan):
+        raise ValueError(f"FORECASTER_PLAN must list 1..7 of {FORECASTERS}")
+    return plan
+
+
+def research_sources(env: dict | None = None) -> list[str]:
+    e = os.environ if env is None else env
+    sources = [part.strip() for part in setting(e, "RESEARCH_SOURCES").split(",") if part.strip()]
+    if any(src not in RESEARCH_SOURCES for src in sources):
+        raise ValueError(f"RESEARCH_SOURCES must be a subset of {RESEARCH_SOURCES}")
+    if "asknews" in sources and not has_asknews(e):
+        sources.remove("asknews")
+    return sources
+
+
+def _effort(env, name: str) -> str:
+    value = setting(env, name)
+    if value not in EFFORTS:
+        raise ValueError(f"{name} must be one of {EFFORTS}")
+    return value
+
+
+def all_models(env: dict | None = None) -> tuple[str, ...]:
+    e = os.environ if env is None else env
+    claude, gpt = model_names(e)
+    return (claude, gpt, setting(e, "GPT_FORECAST_MODEL"), setting(e, "CLAUDE_RESEARCH_MODEL"), setting(e, "GPT_RESEARCH_MODEL"))
 
 
 def gpt_reasoning_effort(env: dict | None = None) -> str:
@@ -107,13 +158,31 @@ def build_llm_config(env: dict | None = None, key_pools: dict | None = None):
             return make_failover_llm(pools[provider], **kwargs)
         return GeneralLlm(**kwargs)
 
+    claude_kwargs["reasoning_effort"] = _effort(e, "CLAUDE_FORECAST_EFFORT")  # -> output_config.effort
+    gpt_forecast_kwargs = dict(
+        model=setting(e, "GPT_FORECAST_MODEL"), temperature=None, timeout=300, allowed_tries=2,
+        reasoning_effort=_effort(e, "GPT_FORECAST_EFFORT"),
+    )
+    claude_research_kwargs = dict(
+        model=setting(e, "CLAUDE_RESEARCH_MODEL"), temperature=None, timeout=300, allowed_tries=2, max_tokens=8000,
+        reasoning_effort="medium",
+        web_search_options={"search_context_size": "medium"},  # Anthropic server-side web search
+    )
+    gpt_research_kwargs = dict(
+        model=setting(e, "GPT_RESEARCH_MODEL"), temperature=None, timeout=300, allowed_tries=2,
+        reasoning_effort="medium", responses_api=True, tools=[{"type": "web_search"}],  # OpenAI web search
+    )
+
     parser = llm("openai", gpt_kwargs)
     summarizer = llm("openai", gpt_kwargs)
     return {
         # temperature=None: current Claude/GPT reasoning models reject sampling params.
         "default": llm("anthropic", claude_kwargs),
+        "gpt_forecaster": llm("openai", gpt_forecast_kwargs),
+        "claude_researcher": llm("anthropic", claude_research_kwargs),
+        "gpt_researcher": llm("openai", gpt_research_kwargs),
         "parser": parser,
         "summarizer": summarizer,
-        # Without AskNews there is intentionally NO live research (no fake "web search").
+        # Without AskNews this source is skipped; the web-search researchers still run.
         "researcher": "asknews/news-summaries" if has_asknews(e) else "no_research",
     }

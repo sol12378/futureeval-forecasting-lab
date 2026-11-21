@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import contextvars
 import logging
 import os
 import sys
@@ -17,7 +18,11 @@ from budget_guard import (
     question_key,
 )
 from forecast_config import (
+    all_models,
     build_llm_config,
+    forecaster_plan,
+    research_sources,
+    setting,
     config_counts,
     gpt_reasoning_effort,
     has_asknews,
@@ -707,6 +712,9 @@ class FallTemplateBot2026(ForecastBot):
 
 
 
+_FORECASTER: contextvars.ContextVar[str] = contextvars.ContextVar("forecaster", default="claude")
+
+
 class GuardedBot(FallTemplateBot2026):
     """Template bot + per-provider budget guard + per-question ledger entries.
 
@@ -728,28 +736,100 @@ class GuardedBot(FallTemplateBot2026):
             " Ignore any other percentiles (for example a median / 50th percentile or 5th/95th) even if they appear in the text."
         )
 
-    async def run_research(self, question: MetaculusQuestion) -> str:
-        self._guard(f"research for {question.page_url}")
-        researcher = str(GeneralLlm.to_model_name(self.get_llm("researcher")))
+    # ------------------------------------------------------------------ research
+    research_sources: tuple[str, ...] = ("asknews",)
+    forecaster_plan: tuple[str, ...] = ("claude",)
+
+    def _research_semaphore(self) -> asyncio.Semaphore:
+        # One semaphore per event loop (main.py runs FutureEval and MiniBench in separate loops).
+        loop = asyncio.get_running_loop()
+        if getattr(self, "_research_sem_loop", None) is not loop:
+            self._research_sem = asyncio.Semaphore(3)
+            self._research_sem_loop = loop
+        return self._research_sem
+
+    @staticmethod
+    def _web_research_prompt(question: MetaculusQuestion) -> str:
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        closes = getattr(question, "close_time", None)
+        resolves = getattr(question, "scheduled_resolution_time", None)
+        return clean_indents(
+            f"""
+            You are the research assistant of a professional superforecaster. Today is {today} (UTC).
+            Use web search to gather the most decision-relevant, CURRENT evidence for the question below.
+            Do not give a probability yourself.
+
+            Question: {question.question_text}
+            Question closes: {closes}; scheduled resolution: {resolves}
+
+            Resolution criteria:
+            {question.resolution_criteria}
+
+            Fine print:
+            {question.fine_print}
+
+            Background provided:
+            {question.background_info}
+
+            Report concisely (under 600 words), with dates and sources for every fact:
+            1. The current status / latest value of whatever the resolution depends on (check the named resolution source if any).
+            2. Recent news (most recent first) and anything already scheduled before the resolution date.
+            3. Historical base rates or comparable past cases, and recent trend / volatility for numeric quantities.
+            4. Expert, official or market expectations (polls, prediction markets, consensus forecasts) if available.
+            5. Whether the question may effectively be already decided, and any ambiguity in the resolution criteria.
+            """
+        )
+
+    async def _research_with(self, source: str, question: MetaculusQuestion) -> str:
         guard = self.budget_guard
-        if researcher.startswith("asknews") and guard is not None and not guard.try_reserve_asknews_call():
-            logger.warning("AskNews search cap reached; forecasting %s without research", question.page_url)
-            return ""
-        try:
+        if source == "asknews":
+            if guard is not None and not guard.try_reserve_asknews_call():
+                logger.warning("AskNews search cap reached; skipping AskNews for %s", question.page_url)
+                return ""
             return await super().run_research(question)
-        except BudgetExceeded:
-            raise
-        except Exception as exc:
-            # A news-search outage or exhausted search quota must not cost us the forecast:
-            # questions are open only ~3 hours and allow a single submission.
-            logger.warning("Research failed for %s (%s); forecasting without research", question.page_url, type(exc).__name__)
-            if self.budget_guard is not None:
-                self.budget_guard.note_research_failure()
-            return ""
+        llm = self.get_llm("claude_researcher" if source == "claude_web" else "gpt_researcher", "llm")
+        return await llm.invoke(self._web_research_prompt(question))
+
+    async def run_research(self, question: MetaculusQuestion) -> str:
+        """Run every configured source in parallel; a failing source never fails the question."""
+        self._guard(f"research for {question.page_url}")
+        titles = {"claude_web": "Web research (Claude)", "gpt_web": "Web research (GPT)", "asknews": "News (AskNews)"}
+        async with self._research_semaphore():
+            results = await asyncio.gather(
+                *(self._research_with(src, question) for src in self.research_sources), return_exceptions=True
+            )
+        sections = []
+        for source, result in zip(self.research_sources, results):
+            if isinstance(result, BudgetExceeded):
+                raise result
+            if isinstance(result, BaseException):
+                # Questions are open only ~3 hours and allow one submission: degrade, don't fail.
+                logger.warning("Research source %s failed for %s (%s)", source, question.page_url, type(result).__name__)
+                if self.budget_guard is not None:
+                    self.budget_guard.note_research_failure()
+                continue
+            if result and result.strip():
+                sections.append(f"## {titles[source]}\n{result.strip()}")
+        return "\n\n".join(sections)
+
+    # ---------------------------------------------------------------- ensemble
+    def get_llm(self, purpose="default", guarantee_type=None):
+        # Inside a GPT ensemble slot, the template's "default" forecaster resolves to the GPT model.
+        if purpose == "default" and _FORECASTER.get() == "gpt":
+            purpose = "gpt_forecaster"
+        return super().get_llm(purpose, guarantee_type)
 
     async def _make_prediction(self, question: MetaculusQuestion, research: str):
         self._guard(f"prediction for {question.page_url}")
-        return await super()._make_prediction(question, research)
+        counters = self.__dict__.setdefault("_prediction_counters", {})
+        index = counters.get(question_key(question), 0)
+        counters[question_key(question)] = index + 1
+        forecaster = self.forecaster_plan[index % len(self.forecaster_plan)]
+        token = _FORECASTER.set(forecaster)  # task-local: concurrent predictions don't interfere
+        try:
+            return await super()._make_prediction(question, research)
+        finally:
+            _FORECASTER.reset(token)
 
     async def _run_individual_question(self, question: MetaculusQuestion):
         guard = self.budget_guard
@@ -836,13 +916,19 @@ def run(run_mode: str) -> int:
         return EXIT_OK
 
     claude_model, gpt_model = model_names()
-    missing_prices = unpriced_models((claude_model, gpt_model))
+    try:
+        missing_prices = unpriced_models(all_models())
+    except ValueError as exc:
+        print(f"CONFIG_ERROR: {exc}")
+        return EXIT_CONFIG
     if missing_prices:
         print(f"CONFIG_ERROR: litellm cannot price {missing_prices}; budget guard would be blind. Refusing to run.")
         return EXIT_CONFIG
     try:
         guard = BudgetGuard.from_env(run_mode)
-        research_count, prediction_count = config_counts()
+        research_count, _unused = config_counts()
+        plan = forecaster_plan()  # one prediction per entry, median-aggregated
+        sources = research_sources()
         gpt_effort = gpt_reasoning_effort()
         # Start on the key slots the previous run this month ended on (slot 1 at month start).
         start_slots = load_last_key_slots(guard.ledger_dir, guard.month)
@@ -860,9 +946,10 @@ def run(run_mode: str) -> int:
         guard.write_record({"refused": "budget_hard_stop"})
         _write_step_summary(guard.summary_lines() + ["BUDGET_HARD_STOP"])
         return EXIT_BUDGET
-    if level == "soft" and prediction_count > 1:
-        print(f"BUDGET_SOFT_LIMIT: reducing predictions per research report {prediction_count} -> 1")
-        prediction_count = 1
+    if level == "soft" and len(plan) > 1:
+        print(f"BUDGET_SOFT_LIMIT: reducing the ensemble {plan} -> {plan[:1]}")
+        plan = plan[:1]
+    prediction_count = len(plan)
     for pool in key_pools.values():
         pool.activate()
     guard.install()
@@ -876,10 +963,10 @@ def run(run_mode: str) -> int:
     publish_to_metaculus = True
     print_startup_banner(run_mode, will_publish=publish_to_metaculus)
     print(
-        f"Models: forecaster={claude_model}, parser/summarizer={gpt_model} (reasoning={gpt_effort}), "
+        f"Forecasters: {plan} (claude={claude_model}, gpt={setting(os.environ, 'GPT_FORECAST_MODEL')}), "
+        f"parser={gpt_model} (reasoning={gpt_effort}), research={sources}, "
         f"keys: Claude {key_pools['anthropic'].size} (slot {key_pools['anthropic'].slot}), "
         f"GPT {key_pools['openai'].size} (slot {key_pools['openai'].slot}), "
-        f"research={'AskNews' if has_asknews() else 'NONE (AskNews not configured)'}, "
         f"research_reports={research_count}, predictions_per_report={prediction_count}"
     )
 
@@ -896,6 +983,8 @@ def run(run_mode: str) -> int:
         llms=build_llm_config(key_pools=key_pools),
     )
     bot.budget_guard = guard
+    bot.forecaster_plan = tuple(plan)
+    bot.research_sources = tuple(sources)
 
     client = MetaculusClient()
     forecast_reports: list = []
@@ -968,6 +1057,8 @@ def run(run_mode: str) -> int:
                 "keys_switched_from": {p: pool.switched_from for p, pool in key_pools.items()},
                 "asknews": has_asknews(),
                 "predictions_per_report": prediction_count,
+                "forecaster_plan": plan,
+                "research_sources": sources,
                 "notes": notes,
             }
         )

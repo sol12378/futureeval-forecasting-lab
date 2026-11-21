@@ -50,6 +50,27 @@ DEFAULT_ASKNEWS_TOTAL_CALL_CAP = 150
 UNPRICED_CALL_CHARGE_USD = 0.50
 
 
+WEB_SEARCH_FEE_USD = 0.01  # Anthropic and OpenAI both list web search at $10 per 1,000 searches
+
+
+def web_search_fee(response_obj: Any) -> float:
+    """Search fees that token pricing may not include (may double count: conservative by design)."""
+    try:
+        searches = 0
+        for item in getattr(response_obj, "output", None) or []:  # OpenAI Responses API
+            kind = item.get("type") if isinstance(item, dict) else getattr(item, "type", None)
+            if kind == "web_search_call":
+                searches += 1
+        usage = getattr(response_obj, "usage", None)
+        server = getattr(usage, "server_tool_use", None) if usage is not None else None
+        if server is not None:  # Anthropic server-side web search
+            count = server.get("web_search_requests") if isinstance(server, dict) else getattr(server, "web_search_requests", 0)
+            searches += int(count or 0)
+        return searches * WEB_SEARCH_FEE_USD
+    except Exception:  # noqa: BLE001 - never let accounting break a forecast
+        return 0.0
+
+
 class BudgetExceeded(RuntimeError):
     """Raised before starting LLM work that would break a budget rule."""
 
@@ -349,6 +370,8 @@ class BudgetGuard:
                 self._seen_call_ids.add(call_id)
             if cost is not None and not _is_cost(cost):
                 cost = None  # NaN/negative/absurd values are treated as unpriced
+            if cost is not None:
+                cost = float(cost) + web_search_fee(response_obj)
             if cost is None:
                 self.unpriced_calls += 1
                 cost = UNPRICED_CALL_CHARGE_USD

@@ -3,9 +3,9 @@ name: Test Bot
 on:
   workflow_dispatch:
     inputs:
-      predictions:
-        description: "Predictions per question (1-5)"
-        default: "1"
+      plan:
+        description: "Forecaster plan, e.g. claude,gpt (empty = repository default)"
+        default: ""
 
 permissions:
   contents: read # the forecasting job is read-only; save_ledger below gets write
@@ -30,8 +30,14 @@ jobs:
       CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL }}
       GPT_MODEL: ${{ vars.GPT_MODEL }}
       GPT_REASONING_EFFORT: ${{ vars.GPT_REASONING_EFFORT }}
+      FORECASTER_PLAN: ${{ inputs.plan || vars.FORECASTER_PLAN }}
+      CLAUDE_FORECAST_EFFORT: ${{ vars.CLAUDE_FORECAST_EFFORT }}
+      GPT_FORECAST_MODEL: ${{ vars.GPT_FORECAST_MODEL }}
+      GPT_FORECAST_EFFORT: ${{ vars.GPT_FORECAST_EFFORT }}
+      RESEARCH_SOURCES: ${{ vars.RESEARCH_SOURCES }}
+      CLAUDE_RESEARCH_MODEL: ${{ vars.CLAUDE_RESEARCH_MODEL }}
+      GPT_RESEARCH_MODEL: ${{ vars.GPT_RESEARCH_MODEL }}
       RESEARCH_REPORTS_PER_QUESTION: "1"
-      PREDICTIONS_PER_RESEARCH_REPORT: ${{ inputs.predictions || '1' }}
       CLAUDE_MONTHLY_BUDGET_PER_KEY_USD: ${{ vars.CLAUDE_MONTHLY_BUDGET_PER_KEY_USD || '200' }}
       GPT_MONTHLY_BUDGET_PER_KEY_USD: ${{ vars.GPT_MONTHLY_BUDGET_PER_KEY_USD || '100' }}
       BUDGET_SOFT_RATIO: ${{ vars.BUDGET_SOFT_RATIO || '0.70' }}
