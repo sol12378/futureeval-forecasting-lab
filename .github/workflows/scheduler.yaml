@@ -1,0 +1,44 @@
+name: Scheduler (20-min trigger, fork-safe)
+# GitHub does not reliably fire `schedule` events on forked repositories, so this workflow keeps
+# the forecaster running every 20 minutes on its own:
+#   - one run lives ~5.5 h and dispatches "Forecast on new AI tournament questions" every 20 min;
+#   - before it ends it dispatches the next scheduler run (GITHUB_TOKEN may trigger
+#     workflow_dispatch), so the chain continues indefinitely.
+# Stop it: set ENABLE_LIVE_FORECASTS=false (the next link is skipped) or cancel the run
+# (a cancelled run does not hand over). Start/restart it: run this workflow manually.
+# Public repository => Actions minutes are free.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "11 */6 * * *" # revives the chain if schedules ever start firing on this fork
+
+permissions:
+  actions: write # dispatch the forecaster and the next scheduler link
+  contents: read
+
+concurrency:
+  group: futureeval-scheduler
+  cancel-in-progress: false
+
+jobs:
+  tick:
+    if: ${{ vars.ENABLE_LIVE_FORECASTS == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Dispatch the forecaster every 20 minutes (~5.5 hours)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          end=$((SECONDS + 5*3600 + 30*60))
+          while [ "$SECONDS" -lt "$end" ]; do
+            echo "$(date -u +%FT%TZ) dispatching forecaster"
+            gh workflow run run_bot_on_tournament.yaml -R "$GITHUB_REPOSITORY" --ref main \
+              || echo "::warning::forecaster dispatch failed; will retry next tick"
+            sleep 1200
+          done
+      - name: Hand over to the next scheduler link
+        if: ${{ success() || failure() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run scheduler.yaml -R "$GITHUB_REPOSITORY" --ref main
