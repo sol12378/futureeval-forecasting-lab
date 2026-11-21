@@ -20,7 +20,7 @@ NOW = datetime(2026, 11, 21, 12, 0, tzinfo=timezone.utc)
 def write(ledger: Path, month: str, name: str, record: dict) -> None:
     d = ledger / "runs" / month
     d.mkdir(parents=True, exist_ok=True)
-    (d / name).write_text(json.dumps(record))
+    (d / name).write_text(json.dumps({"mode": "tournament", **record}))
 
 
 class BudgetGuardTests(unittest.TestCase):
@@ -76,9 +76,19 @@ class BudgetGuardTests(unittest.TestCase):
         (d / "bad.json").write_text("{not json")
         with self.assertRaises(LedgerError):
             self.guard()
-        (d / "bad.json").write_text(json.dumps({"cost_usd": {"anthropic": -5}}))
-        with self.assertRaises(LedgerError):
-            self.guard()
+        for bad in (
+            '{"mode": "tournament", "cost_usd": {"anthropic": -5}}',
+            '{"mode": "tournament", "cost_usd": {"anthropic": NaN}}',
+            '{"mode": "tournament", "cost_usd": {"openai": Infinity}}',
+            '{"mode": "tournament", "cost_usd": {"anthropic": "1"}}',
+            '{"mode": "tournament", "cost_usd": {"anthropic": true}}',
+            '{"mode": "tournament", "cost_usd": {"gemini": 1}}',
+            '{"mode": "hacked", "cost_usd": {"anthropic": 1}}',
+            '{"mode": "tournament", "cost_usd": {}, "questions": [{"key": "1:2", "status": "weird"}]}',
+        ):
+            (d / "bad.json").write_text(bad)
+            with self.assertRaises(LedgerError, msg=bad):
+                self.guard()
 
     def test_require_ledger(self):
         with self.assertRaises(LedgerError):
@@ -123,6 +133,25 @@ class BudgetGuardTests(unittest.TestCase):
         self.assertEqual(g.questions["1:2"]["error"], "AuthenticationError")
         g.note_question("3:4", None, "failed", "sk-ant-abc123 leaked")
         self.assertEqual(g.questions["3:4"]["error"], "Error")
+
+    def test_nan_spend_fails_closed(self):
+        g = self.guard()
+        g.run_spend["anthropic"] = float("nan")
+        self.assertEqual(g.level(), "hard")
+        g.run_spend["anthropic"] = 0.0
+        g.record_llm_call({"model": "claude-opus-5-5", "litellm_call_id": "n", "response_cost": float("nan")}, None)
+        self.assertEqual(g.unpriced_calls, 1)  # NaN cost charged conservatively, never as NaN
+        self.assertAlmostEqual(g.run_spend["anthropic"], 0.50)
+
+    def test_cli_validate(self):
+        from budget_guard import _cli, current_month
+
+        good = self.ledger / "good.json"
+        good.write_text('{"mode": "test_questions", "cost_usd": {"anthropic": 0.2}}')
+        self.assertEqual(_cli(["validate", str(good), current_month()]), 0)
+        self.assertEqual(_cli(["validate", str(good), "2001-01"]), 1)
+        good.write_text('{"mode": "test_questions", "cost_usd": {"anthropic": NaN}}')
+        self.assertEqual(_cli(["validate", str(good), current_month()]), 1)
 
     def test_previous_month(self):
         self.assertEqual(previous_month("2026-01"), "2025-12")

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import threading
@@ -84,30 +85,83 @@ def previous_month(month: str) -> str:
     return f"{year - 1}-12" if mon == 1 else f"{year}-{mon - 1:02d}"
 
 
+MODES = ("tournament", "test_questions", "metaculus_cup")
+QUESTION_STATUSES = ("submitted", "failed", "skipped_budget", "dry_run")
+MAX_RECORD_COST_USD = 1_000.0
+MAX_RECORD_BYTES = 1_000_000
+
+
+def _reject_constant(name: str) -> float:
+    raise ValueError(f"non-finite number {name} is not allowed")
+
+
+def _is_cost(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and 0 <= value <= MAX_RECORD_COST_USD
+    )
+
+
+def validate_record(data: Any) -> dict:
+    """Single schema check shared by the budget guard and the ledger ingest step.
+
+    Anything that could make a monthly sum wrong (NaN/Infinity, negatives, bools,
+    strings, unknown providers) is rejected so that a bad record stops the bot
+    instead of silently lowering the measured spend.
+    """
+    if not isinstance(data, dict):
+        raise LedgerError("record is not an object")
+    costs = data.get("cost_usd")
+    if not isinstance(costs, dict) or not costs.keys() <= set(PROVIDERS):
+        raise LedgerError("cost_usd must map only known providers")
+    if not all(_is_cost(v) for v in costs.values()):
+        raise LedgerError("cost_usd values must be finite numbers in 0..1000")
+    if not _is_cost(data.get("unknown_provider_cost_usd", 0.0)):
+        raise LedgerError("unknown_provider_cost_usd invalid")
+    if data.get("mode") not in MODES:
+        raise LedgerError("mode invalid")
+    questions = data.get("questions", [])
+    if not isinstance(questions, list):
+        raise LedgerError("questions must be a list")
+    for q in questions:
+        if not isinstance(q, dict) or not isinstance(q.get("key"), str) or q.get("status") not in QUESTION_STATUSES:
+            raise LedgerError("question entry invalid")
+    return data
+
+
+def read_record_file(path: Path) -> dict:
+    try:
+        raw = path.read_bytes()
+        if len(raw) > MAX_RECORD_BYTES:
+            raise LedgerError(f"Ledger record {path.name} too large")
+        data = json.loads(raw.decode("utf-8"), parse_constant=_reject_constant)
+    except LedgerError:
+        raise
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        raise LedgerError(f"Unreadable ledger record {path.name}: {exc}") from exc
+    try:
+        return validate_record(data)
+    except LedgerError as exc:
+        raise LedgerError(f"Malformed ledger record {path.name}: {exc}") from exc
+
+
 def _iter_records(ledger_dir: Path, month: str) -> Iterable[dict]:
     month_dir = ledger_dir / "runs" / month
     if not month_dir.is_dir():
         return []
-    records = []
-    for path in sorted(month_dir.glob("*.json")):
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise LedgerError(f"Unreadable ledger record {path.name}: {exc}") from exc
-        if not isinstance(data, dict) or not isinstance(data.get("cost_usd"), dict):
-            raise LedgerError(f"Malformed ledger record {path.name}")
-        records.append(data)
-    return records
+    return [read_record_file(path) for path in sorted(month_dir.glob("*.json"))]
 
 
 def load_month_spend(ledger_dir: Path, month: str) -> dict[str, float]:
     spend = {p: 0.0 for p in PROVIDERS}
     for record in _iter_records(ledger_dir, month):
         for provider in PROVIDERS:
-            value = record["cost_usd"].get(provider, 0.0)
-            if not isinstance(value, (int, float)) or value < 0:
-                raise LedgerError(f"Invalid cost value in ledger run {record.get('run_id')}")
-            spend[provider] += float(value)
+            spend[provider] += float(record["cost_usd"].get(provider, 0.0))
+    for provider, total in spend.items():
+        if not math.isfinite(total):
+            raise LedgerError(f"Non-finite monthly spend for {provider}")
     return spend
 
 
@@ -200,6 +254,8 @@ class BudgetGuard:
                 return
             if call_id:
                 self._seen_call_ids.add(call_id)
+            if cost is not None and not _is_cost(cost):
+                cost = None  # NaN/negative/absurd values are treated as unpriced
             if cost is None:
                 self.unpriced_calls += 1
                 cost = UNPRICED_CALL_CHARGE_USD
@@ -218,9 +274,10 @@ class BudgetGuard:
 
     def ratio(self, provider: str) -> float:
         budget = self.budgets[provider]
-        if budget <= 0:
-            return float("inf")
-        return self.total_spend(provider) / budget
+        spent = self.total_spend(provider)
+        if budget <= 0 or not math.isfinite(spent):
+            return float("inf")  # fail closed
+        return spent / budget
 
     def level(self) -> str:
         worst = max(self.ratio(p) for p in PROVIDERS)
@@ -293,3 +350,27 @@ class BudgetGuard:
         path = month_dir / f"{stamp}_{self.mode}_{run_id}-{attempt}.json"
         path.write_text(json.dumps(record, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         return path
+
+
+def _cli(argv: list[str]) -> int:
+    """`python3 budget_guard.py validate RECORD.json YYYY-MM` (stdlib only; used by ledger ingest)."""
+    if len(argv) != 3 or argv[0] != "validate":
+        print("usage: budget_guard.py validate RECORD.json YYYY-MM")
+        return 2
+    path, month = Path(argv[1]), argv[2]
+    now_month = current_month()
+    if month not in (now_month, previous_month(now_month)):
+        print(f"REJECTED month {month}: only {now_month} or {previous_month(now_month)} may be appended")
+        return 1
+    try:
+        read_record_file(path)
+    except LedgerError as exc:
+        print(f"REJECTED content: {exc}")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+
+    raise SystemExit(_cli(sys.argv[1:]))

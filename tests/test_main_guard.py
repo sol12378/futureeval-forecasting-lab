@@ -41,7 +41,7 @@ class MainGuardTests(unittest.TestCase):
 
         d = Path(self.tmp.name) / "runs" / current_month()
         d.mkdir(parents=True)
-        (d / "x.json").write_text('{"cost_usd": {"anthropic": 0.95, "openai": 0}}')
+        (d / "x.json").write_text('{"mode": "tournament", "cost_usd": {"anthropic": 0.95, "openai": 0}}')
         with patch.object(self.main, "MetaculusClient") as client:
             self.assertEqual(self.main.run("tournament"), self.main.EXIT_BUDGET)
             client.assert_not_called()

@@ -7,6 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from budget_guard import current_month
+
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "ledger.sh"
 GIT_ENV = {
     "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
@@ -41,17 +43,17 @@ class LedgerScriptTests(unittest.TestCase):
         return subprocess.run(["bash", str(SCRIPT), *args], cwd=self.work, env=self.env, capture_output=True, text=True)
 
     def write_record(self, name, data):
-        d = self.work / "ops_ledger" / "runs" / "2026-11"
+        d = self.work / "ops_ledger" / "runs" / current_month()
         d.mkdir(parents=True, exist_ok=True)
         (d / name).write_text(json.dumps(data))
 
     def test_collect_ingest_push_roundtrip(self):
         self.assertEqual(self.ledger("pull").returncode, 0)
-        self.write_record("20261121T000000Z_test_1-1.json", {"cost_usd": {"anthropic": 0.1}})
+        self.write_record("20261121T000000Z_test_1-1.json", {"mode": "test_questions", "cost_usd": {"anthropic": 0.1}})
         out = self.tmp / "out"
         r = self.ledger("collect", str(out))
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertTrue((out / "runs/2026-11/20261121T000000Z_test_1-1.json").is_file())
+        self.assertTrue((out / "runs" / current_month() / "20261121T000000Z_test_1-1.json").is_file())
         self.git("worktree", "remove", "--force", "ops_ledger", cwd=self.work)
 
         # write job: fresh checkout, ingest validated records, push
@@ -68,17 +70,25 @@ class LedgerScriptTests(unittest.TestCase):
 
     def test_ingest_rejects_bad_paths_and_content(self):
         self.assertEqual(self.ledger("pull").returncode, 0)
-        bad = self.tmp / "bad" / "runs" / "2026-11"
+        bad = self.tmp / "bad" / "runs" / current_month()
         bad.mkdir(parents=True)
         (bad / "x;rm.json").write_text('{"cost_usd": {}}')
         r = self.ledger("ingest", str(self.tmp / "bad"))
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("REJECTED path", r.stdout)
         (bad / "x;rm.json").unlink()
-        (bad / "ok.json").write_text('{"no_cost": 1}')
+        for content in ('{"no_cost": 1}', '{"mode": "tournament", "cost_usd": {"anthropic": NaN}}'):
+            (bad / "ok.json").write_text(content)
+            r = self.ledger("ingest", str(self.tmp / "bad"))
+            self.assertNotEqual(r.returncode, 0, content)
+            self.assertIn("REJECTED content", r.stdout)
+        (bad / "ok.json").unlink()
+        old = self.tmp / "bad" / "runs" / "2001-01"
+        old.mkdir(parents=True)
+        (old / "ok.json").write_text('{"mode": "tournament", "cost_usd": {"anthropic": 0}}')
         r = self.ledger("ingest", str(self.tmp / "bad"))
         self.assertNotEqual(r.returncode, 0)
-        self.assertIn("REJECTED content", r.stdout)
+        self.assertIn("REJECTED month", r.stdout)
 
     def test_pull_fails_closed_without_branch(self):
         empty = self.tmp / "empty.git"

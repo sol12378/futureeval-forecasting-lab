@@ -9,6 +9,7 @@
 set -euo pipefail
 DIR="${LEDGER_DIR:-ops_ledger}"
 BRANCH="${LEDGER_BRANCH:-ops-ledger}"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 case "${1:-}" in
   pull)
@@ -31,12 +32,13 @@ case "${1:-}" in
     [ -d "$IN/runs" ] || { echo "No records to ingest"; exit 0; }
     find "$IN/runs" -type f | while IFS= read -r src; do
       rel="${src#"$IN"/}"
-      # Only runs/YYYY-MM/<safe-name>.json is accepted, and it must be valid JSON with a cost map.
+      # Only runs/YYYY-MM/<safe-name>.json for the current or previous month is accepted.
       if ! printf '%s' "$rel" | grep -Eq '^runs/[0-9]{4}-[0-9]{2}/[A-Za-z0-9._-]+\.json$'; then
         echo "REJECTED path: $rel"; exit 1
       fi
-      python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert isinstance(d.get("cost_usd"), dict)' "$src" \
-        || { echo "REJECTED content: $rel"; exit 1; }
+      month="$(basename "$(dirname "$rel")")"
+      # Same schema check the budget guard applies when summing spend (stdlib-only Python).
+      python3 "$ROOT/budget_guard.py" validate "$src" "$month" || { echo "REJECTED content: $rel"; exit 1; }
       if [ -e "$DIR/$rel" ]; then echo "REJECTED overwrite: $rel"; exit 1; fi
       mkdir -p "$DIR/$(dirname "$rel")"
       cp "$src" "$DIR/$rel"
