@@ -18,14 +18,15 @@ GPT_REASONING_EFFORTS = ("none", "low", "medium", "high", "xhigh", "max")
 # Ensemble + research defaults (each overridable with a repository variable of the same name).
 DEFAULTS = {
     # Who makes each of the N predictions per question (median-aggregated by forecasting-tools).
-    "FORECASTER_PLAN": "claude,claude,claude,gpt,gpt",
-    "CLAUDE_FORECAST_EFFORT": "high",
+    "FORECASTER_PLAN": "claude,claude,claude,claude,gpt,gpt",
+    "CLAUDE_FORECAST_EFFORT": "xhigh",
     "GPT_FORECAST_MODEL": "openai/gpt-6.2-sol",
     "GPT_FORECAST_EFFORT": "high",
     # Research sources run in parallel; their findings are concatenated for every forecaster.
     "RESEARCH_SOURCES": "claude_web,gpt_web,asknews",
-    "CLAUDE_RESEARCH_MODEL": "anthropic/claude-sonnet-5-5",
+    "CLAUDE_RESEARCH_MODEL": "anthropic/claude-opus-5-5",
     "GPT_RESEARCH_MODEL": "openai/gpt-6.2-sol",
+    "GPT_RESEARCH_EFFORT": "low",
 }
 FORECASTERS = ("claude", "gpt")
 RESEARCH_SOURCES = ("claude_web", "gpt_web", "asknews")
@@ -170,7 +171,7 @@ def build_llm_config(env: dict | None = None, key_pools: dict | None = None):
     )
     gpt_research_kwargs = dict(
         model=setting(e, "GPT_RESEARCH_MODEL"), temperature=None, timeout=300, allowed_tries=2,
-        reasoning_effort="medium", responses_api=True, tools=[{"type": "web_search"}],  # OpenAI web search
+        reasoning_effort=_effort(e, "GPT_RESEARCH_EFFORT"), responses_api=True, tools=[{"type": "web_search"}],
     )
 
     parser = llm("openai", gpt_kwargs)

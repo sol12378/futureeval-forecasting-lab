@@ -799,6 +799,8 @@ class GuardedBot(FallTemplateBot2026):
                 *(self._research_with(src, question) for src in self.research_sources), return_exceptions=True
             )
         sections = []
+        sizes = {src: (len(r) if isinstance(r, str) else type(r).__name__) for src, r in zip(self.research_sources, results)}
+        print(f"Research sizes for {question.page_url}: {sizes}")  # lengths only, safe for public logs
         for source, result in zip(self.research_sources, results):
             if isinstance(result, BudgetExceeded):
                 raise result
