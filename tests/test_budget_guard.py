@@ -220,7 +220,8 @@ class BudgetGuardTests(unittest.TestCase):
     def test_unequal_key_budgets(self):
         from api_keys import KeyPool
 
-        g = self.guard(CLAUDE_MONTHLY_BUDGET_PER_KEY_USD="400,200", GPT_MONTHLY_BUDGET_PER_KEY_USD="180, 100")
+        g = self.guard(CLAUDE_MONTHLY_BUDGET_PER_KEY_USD="400,200", GPT_MONTHLY_BUDGET_PER_KEY_USD="180, 100",
+                       RUN_COST_CAP_USD="1000")
         self.assertEqual(g.budgets, {"anthropic": (400.0, 200.0), "openai": (180.0, 100.0)})
         pools = {"anthropic": KeyPool("anthropic", {"ANTHROPIC_API_KEY": "a1", "ANTHROPIC_API_KEY_2": "a2"}),
                  "openai": KeyPool("openai", {"OPENAI_API_KEY": "o1", "OPENAI_API_KEY_2": "o2"})}
