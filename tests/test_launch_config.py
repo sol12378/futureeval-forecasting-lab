@@ -84,7 +84,8 @@ class ModelSelectionTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     forecaster_plan({"FORECASTER_PLAN": bad})
         self.assertEqual(research_sources({}), ["claude_web", "gpt_web"])  # no AskNews key -> dropped
-        self.assertEqual(research_sources({"ASKNEWS_API_KEY": "k"}), ["claude_web", "gpt_web", "asknews"])
+        self.assertEqual(research_sources({"ASKNEWS_API_KEY": "k"}), ["claude_web", "gpt_web"])  # opt-in only
+        self.assertEqual(research_sources({"ASKNEWS_API_KEY": "k", "RESEARCH_SOURCES": "gpt_web,asknews"}), ["gpt_web", "asknews"])
         with self.assertRaises(ValueError):
             research_sources({"RESEARCH_SOURCES": "google"})
 
