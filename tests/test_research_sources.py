@@ -1,5 +1,6 @@
 import asyncio
 import json
+import socket
 import unittest
 from unittest.mock import patch
 
@@ -157,14 +158,46 @@ class ResolutionPageTests(unittest.TestCase):
             return httpx.Response(404)
 
         criteria = "Resolves per https://www.cdc.gov/measles/data.html or https://example.org/t or https://gone.test/x"
+
+        async def public_dns(host, port, **kw):
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port or 443))]
+
+        async def run():
+            with patch.object(asyncio.get_running_loop(), "getaddrinfo", public_dns):
+                return await rs.resolution_pages("How many measles cases?", criteria, "", "", extract)
+
         with patch.object(rs.httpx, "AsyncClient", mock_client(handler)):
-            text = asyncio.run(rs.resolution_pages("How many measles cases?", criteria, "", "", extract))
+            text = asyncio.run(run())
         self.assertIn("https://www.cdc.gov/measles/data.html:", text)
         self.assertIn("https://example.org/t:", text)
         self.assertNotIn("gone.test", text)  # 404 on both paths -> skipped, not fatal
         self.assertEqual(len(prompts), 2)
         self.assertTrue(any("Total cases 5,907" in p for p in prompts))
         self.assertTrue(any("Backup table row 12" in p for p in prompts))
+
+    def test_private_hosts_and_redirects_refused(self):
+        hits = []
+
+        def handler(request: httpx.Request):
+            hits.append(str(request.url))
+            if request.url.host == "r.jina.ai":
+                return httpx.Response(503)
+            return httpx.Response(302, headers={"location": "http://169.254.169.254/latest/meta-data/"})
+
+        async def fake_dns(host, port, **kw):
+            ip = "93.184.216.34" if host == "public.test" else "169.254.169.254"
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, port or 80))]
+
+        async def run(url):
+            loop = asyncio.get_running_loop()
+            with patch.object(loop, "getaddrinfo", fake_dns):
+                async with mock_client(handler)() as client:
+                    return await rs.fetch_page(client, url)
+
+        for url in ("http://169.254.169.254/latest/meta-data/", "http://public.test/redirect", "file:///etc/passwd"):
+            with self.assertRaises(rs.SourceError, msg=url):
+                asyncio.run(run(url))
+        self.assertFalse(any("169.254.169.254" in h and "jina" not in h for h in hits))
 
     def test_no_urls_no_calls(self):
         async def extract(prompt):

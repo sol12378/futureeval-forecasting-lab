@@ -20,7 +20,10 @@ import json
 import logging
 import os
 import re
+import asyncio
 import html as html_lib
+import ipaddress
+import socket
 import statistics
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
@@ -343,22 +346,80 @@ def html_to_text(raw: str) -> str:
     return re.sub(r"\n\s*\n+", "\n", text).strip()
 
 
-async def fetch_page(client: httpx.AsyncClient, url: str, limit: int = PAGE_TEXT_LIMIT) -> str:
-    """Readable text of a page: Jina Reader first (renders JS, reads PDFs), plain GET as fallback."""
+MAX_REDIRECTS = 3
+
+
+async def _assert_public_host(url: str) -> None:
+    """Refuse non-http(s) URLs and hosts resolving to loopback/private/link-local/reserved addresses."""
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").rstrip(".").lower()
+    if parsed.scheme not in ("http", "https") or not host:
+        raise SourceError("Resolution page: unsupported URL")
     try:
-        resp = await client.get(JINA_READER + url, headers={"X-Retain-Images": "none"})
-        if resp.status_code == 200 and len(resp.text.strip()) >= 200:
-            return resp.text.strip()[:limit]
+        infos = await asyncio.get_running_loop().getaddrinfo(host, parsed.port or None, type=socket.SOCK_STREAM)
+    except OSError as exc:
+        raise SourceError("Resolution page: DNS failure") from exc
+    for info in infos:
+        addr = ipaddress.ip_address(info[4][0].split("%", 1)[0])
+        if not addr.is_global or addr.is_multicast:
+            raise SourceError("Resolution page: non-public address refused")
+
+
+MAX_PAGE_BYTES = 2_000_000
+FETCH_DEADLINE_S = 45.0
+
+
+async def _read_capped(client: httpx.AsyncClient, url: str) -> tuple[int, dict, str, httpx.URL]:
+    """Stream a GET (no redirects) and stop after MAX_PAGE_BYTES."""
+    async with client.stream("GET", url, follow_redirects=False) as resp:
+        chunks, size = [], 0
+        async for chunk in resp.aiter_bytes():
+            chunks.append(chunk)
+            size += len(chunk)
+            if size >= MAX_PAGE_BYTES:
+                break
+        encoding = resp.charset_encoding or "utf-8"
+        return resp.status_code, dict(resp.headers), b"".join(chunks).decode(encoding, "replace"), resp.url
+
+
+async def _safe_get(client: httpx.AsyncClient, url: str) -> tuple[int, dict, str]:
+    """GET with every hop (including redirects) checked to point at a public address."""
+    for _ in range(MAX_REDIRECTS + 1):
+        await _assert_public_host(url)
+        status, headers, text, final_url = await _read_capped(client, url)
+        location = headers.get("location")
+        if status in (301, 302, 303, 307, 308) and location:
+            url = str(final_url.join(location))
+            continue
+        return status, headers, text
+    raise SourceError("Resolution page: too many redirects")
+
+
+async def _fetch_page(client: httpx.AsyncClient, url: str, limit: int) -> str:
+    try:
+        status, _headers, text, _url = await _read_capped(client, JINA_READER + url)
+        if status == 200 and len(text.strip()) >= 200:
+            return text.strip()[:limit]
     except httpx.HTTPError:
         pass
-    resp = await client.get(url, follow_redirects=True)
-    _check(resp, "Resolution page")
-    content_type = resp.headers.get("content-type", "").lower()
+    status, headers, text = await _safe_get(client, url)
+    if status >= 400:
+        raise SourceError(f"Resolution page HTTP {status}")
+    content_type = headers.get("content-type", "").lower()
     if "html" in content_type or "xml" in content_type:
-        return html_to_text(resp.text)[:limit]
+        return html_to_text(text)[:limit]
     if content_type.startswith("text/") or "json" in content_type:
-        return resp.text.strip()[:limit]
+        return text.strip()[:limit]
     return ""  # PDFs and binaries need the reader
+
+
+async def fetch_page(client: httpx.AsyncClient, url: str, limit: int = PAGE_TEXT_LIMIT) -> str:
+    """Readable text of a page: Jina Reader first (renders JS, reads PDFs), plain GET as fallback.
+    Bounded in bytes (streamed) and in total time."""
+    try:
+        return await asyncio.wait_for(_fetch_page(client, url, limit), FETCH_DEADLINE_S)
+    except asyncio.TimeoutError as exc:
+        raise SourceError("Resolution page: timed out") from exc
 
 
 async def resolution_pages(question_text: str, criteria: str, fine_print: str, background: str,
@@ -387,6 +448,4 @@ async def resolution_pages(question_text: str, criteria: str, fine_print: str, b
 
 
 async def _gather_quiet(coros: list) -> list:
-    import asyncio
-
     return await asyncio.gather(*coros, return_exceptions=True)
