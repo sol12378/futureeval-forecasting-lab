@@ -19,7 +19,7 @@ GPT_REASONING_EFFORTS = ("none", "low", "medium", "high", "xhigh", "max")
 DEFAULTS = {
     # Who makes each of the N predictions per question (median-aggregated by forecasting-tools).
     # Balanced across vendors: past winners got most from de-correlated ensemble members.
-    "FORECASTER_PLAN": "claude,claude,claude,gpt,gpt,gpt",
+    "FORECASTER_PLAN": "claude,claude,claude,claude,gpt,gpt,gpt,gpt",
     "CLAUDE_FORECAST_EFFORT": "xhigh",
     "GPT_FORECAST_MODEL": "openai/gpt-6.2-sol",
     "GPT_FORECAST_EFFORT": "high",
@@ -87,8 +87,8 @@ def setting(env, name: str) -> str:
 def forecaster_plan(env: dict | None = None) -> list[str]:
     e = os.environ if env is None else env
     plan = [part.strip() for part in setting(e, "FORECASTER_PLAN").split(",") if part.strip()]
-    if not 1 <= len(plan) <= 7 or any(p not in FORECASTERS for p in plan):
-        raise ValueError(f"FORECASTER_PLAN must list 1..7 of {FORECASTERS}")
+    if not 1 <= len(plan) <= 9 or any(p not in FORECASTERS for p in plan):
+        raise ValueError(f"FORECASTER_PLAN must list 1..9 of {FORECASTERS}")
     return plan
 
 

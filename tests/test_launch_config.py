@@ -77,9 +77,9 @@ class ModelSelectionTests(unittest.TestCase):
     def test_ensemble_and_research_settings(self):
         from forecast_config import forecaster_plan, research_sources
 
-        self.assertEqual(forecaster_plan({}), ["claude", "claude", "claude", "gpt", "gpt", "gpt"])
+        self.assertEqual(forecaster_plan({}), ["claude"] * 4 + ["gpt"] * 4)
         self.assertEqual(forecaster_plan({"FORECASTER_PLAN": "claude, gpt"}), ["claude", "gpt"])
-        for bad in ("gemini", "", ",".join(["claude"] * 8)):
+        for bad in ("gemini", "", ",".join(["claude"] * 10)):
             if bad:
                 with self.assertRaises(ValueError):
                     forecaster_plan({"FORECASTER_PLAN": bad})
