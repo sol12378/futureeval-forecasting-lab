@@ -159,6 +159,52 @@ class MainGuardTests(unittest.TestCase):
         self.assertNotIn("GPT", text)
         self.assertEqual(guard.research_failures, 1)
 
+    def test_gap_fill_appends_follow_up_and_tolerates_failure(self):
+        from types import SimpleNamespace
+
+        from budget_guard import BudgetGuard
+
+        guard = BudgetGuard.from_env("tournament", {"LEDGER_DIR": self.tmp.name})
+        bot = self.main.GuardedBot(llms={"default": "x", "parser": "x", "summarizer": "x", "researcher": "no_research"})
+        bot.budget_guard = guard
+        bot.research_sources = ("claude_web", "resolution_pages")
+        bot.gap_fill = True
+        seen = []
+
+        async def fake_with(_self, source, question):
+            return f"facts from {source}"
+
+        async def fake_gap(_self, question, research):
+            seen.append(research)
+            return "settled: latest value 12 on 2026-11-24"
+
+        q = SimpleNamespace(page_url="https://m/9")
+        with patch.object(self.main.GuardedBot, "_research_with", fake_with), \
+             patch.object(self.main.GuardedBot, "_gap_fill", fake_gap):
+            text = asyncio.run(bot.run_research(q))
+        self.assertIn("Resolution source pages", text)
+        self.assertIn("Follow-up research on gaps", text)
+        self.assertIn("facts from resolution_pages", seen[0])
+
+        async def broken_gap(_self, question, research):
+            raise TimeoutError("slow")
+
+        with patch.object(self.main.GuardedBot, "_research_with", fake_with), \
+             patch.object(self.main.GuardedBot, "_gap_fill", broken_gap):
+            text = asyncio.run(bot.run_research(q))
+        self.assertIn("facts from claude_web", text)
+        self.assertNotIn("Follow-up", text)
+        self.assertEqual(guard.research_failures, 1)
+
+    def test_gap_fill_prompt_is_bounded(self):
+        from types import SimpleNamespace
+
+        q = SimpleNamespace(question_text="Q?", resolution_criteria="RC", fine_print="FP",
+                            close_time=None, scheduled_resolution_time=None)
+        prompt = self.main.GuardedBot._gap_fill_prompt(q, "x" * 100000)
+        self.assertLess(len(prompt), self.main.GAP_FILL_RESEARCH_CHARS + 5000)
+        self.assertIn("research truncated", prompt)
+
     def test_prompt_guard_and_mc_floor(self):
         from types import SimpleNamespace
 

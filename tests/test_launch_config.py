@@ -83,12 +83,18 @@ class ModelSelectionTests(unittest.TestCase):
             if bad:
                 with self.assertRaises(ValueError):
                     forecaster_plan({"FORECASTER_PLAN": bad})
-        self.assertEqual(research_sources({}), ["claude_web", "gpt_web", "markets", "data"])  # no Tavily/Exa keys
+        self.assertEqual(research_sources({}), ["claude_web", "gpt_web", "markets", "data", "resolution_pages"])  # no Tavily/Exa keys
         self.assertEqual(research_sources({"TAVILY_API_KEY": "t", "EXA_API_KEY": "e", "ASKNEWS_API_KEY": "k"}),
-                         ["claude_web", "gpt_web", "tavily", "exa", "markets", "data"])  # AskNews opt-in only
+                         ["claude_web", "gpt_web", "tavily", "exa", "markets", "data", "resolution_pages"])  # AskNews opt-in only
         self.assertEqual(research_sources({"ASKNEWS_API_KEY": "k", "RESEARCH_SOURCES": "gpt_web,asknews"}), ["gpt_web", "asknews"])
         with self.assertRaises(ValueError):
             research_sources({"RESEARCH_SOURCES": "google"})
+        from forecast_config import gap_fill_enabled
+
+        self.assertTrue(gap_fill_enabled({}))
+        self.assertFalse(gap_fill_enabled({"RESEARCH_GAP_FILL": "False"}))
+        with self.assertRaises(ValueError):
+            gap_fill_enabled({"RESEARCH_GAP_FILL": "maybe"})
 
     def test_all_default_models_priced(self):
         from forecast_config import all_models, unpriced_models

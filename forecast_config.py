@@ -25,13 +25,15 @@ DEFAULTS = {
     "GPT_FORECAST_EFFORT": "high",
     # Research sources run in parallel; their findings are concatenated for every forecaster.
     # AskNews is opt-in (add "asknews"): its prepaid credit is nearly used up.
-    "RESEARCH_SOURCES": "claude_web,gpt_web,tavily,exa,markets,data",
+    "RESEARCH_SOURCES": "claude_web,gpt_web,tavily,exa,markets,data,resolution_pages",
+    # After the parallel sources: one GPT web-search pass that looks for missing / conflicting facts.
+    "RESEARCH_GAP_FILL": "true",
     "CLAUDE_RESEARCH_MODEL": "anthropic/claude-opus-5-5",
     "GPT_RESEARCH_MODEL": "openai/gpt-6.2-sol",
     "GPT_RESEARCH_EFFORT": "low",
 }
 FORECASTERS = ("claude", "gpt")
-RESEARCH_SOURCES = ("claude_web", "gpt_web", "asknews", "tavily", "exa", "markets", "data")
+RESEARCH_SOURCES = ("claude_web", "gpt_web", "asknews", "tavily", "exa", "markets", "data", "resolution_pages")
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
 REQUIRED_SECRETS = ("METACULUS_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY")
@@ -134,6 +136,14 @@ def unpriced_models(models: tuple[str, ...]) -> list[str]:
         if model not in litellm.model_cost and bare not in litellm.model_cost:
             missing.append(model)
     return missing
+
+
+def gap_fill_enabled(env: dict | None = None) -> bool:
+    e = os.environ if env is None else env
+    value = setting(e, "RESEARCH_GAP_FILL").strip().lower()
+    if value not in ("true", "false"):
+        raise ValueError("RESEARCH_GAP_FILL must be true or false")
+    return value == "true"
 
 
 def build_llm_config(env: dict | None = None, key_pools: dict | None = None):

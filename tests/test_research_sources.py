@@ -121,3 +121,53 @@ class HttpTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ResolutionPageTests(unittest.TestCase):
+    def test_resolution_urls(self):
+        criteria = ("Resolves per [CDC](https://www.cdc.gov/measles/data.html), see also "
+                    "https://www.metaculus.com/questions/1/ and https://www.cdc.gov/measles/data.html.")
+        fine = "Backup: (https://example.org/a?b=1). Extra https://x.test/1 https://x.test/2 https://x.test/3"
+        self.assertEqual(rs.resolution_urls(criteria, fine),
+                         ["https://www.cdc.gov/measles/data.html", "https://example.org/a?b=1", "https://x.test/1"])
+        self.assertEqual(rs.resolution_urls("no links here", None), [])
+
+    def test_html_to_text(self):
+        html = "<html><head><title>t</title></head><body><script>var x=1</script><p>Cases: 5,907</p><br>As of &amp; Nov</body></html>"
+        text = rs.html_to_text(html)
+        self.assertIn("Cases: 5,907", text)
+        self.assertIn("As of & Nov", text)
+        self.assertNotIn("var x", text)
+
+    def test_reader_then_fallback_and_condense(self):
+        prompts = []
+
+        async def extract(prompt):
+            prompts.append(prompt)
+            return "latest 5,907 cases as of 2026-11-20"
+
+        def handler(request: httpx.Request):
+            if request.url.host == "r.jina.ai":
+                if "cdc.gov" in str(request.url):
+                    return httpx.Response(200, text="Title: Measles\n" + "Total cases 5,907 as of Nov 20. " * 10)
+                return httpx.Response(429, text="rate limited")
+            if request.url.host == "example.org":
+                return httpx.Response(200, headers={"content-type": "text/html"},
+                                      text="<p>" + "Backup table row 12 " * 20 + "</p>")
+            return httpx.Response(404)
+
+        criteria = "Resolves per https://www.cdc.gov/measles/data.html or https://example.org/t or https://gone.test/x"
+        with patch.object(rs.httpx, "AsyncClient", mock_client(handler)):
+            text = asyncio.run(rs.resolution_pages("How many measles cases?", criteria, "", "", extract))
+        self.assertIn("https://www.cdc.gov/measles/data.html:", text)
+        self.assertIn("https://example.org/t:", text)
+        self.assertNotIn("gone.test", text)  # 404 on both paths -> skipped, not fatal
+        self.assertEqual(len(prompts), 2)
+        self.assertTrue(any("Total cases 5,907" in p for p in prompts))
+        self.assertTrue(any("Backup table row 12" in p for p in prompts))
+
+    def test_no_urls_no_calls(self):
+        async def extract(prompt):
+            raise AssertionError("should not be called")
+
+        self.assertEqual(asyncio.run(rs.resolution_pages("q", "plain text", "", "", extract)), "")

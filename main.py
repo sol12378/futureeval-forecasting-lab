@@ -21,6 +21,7 @@ from budget_guard import (
 )
 from forecast_config import (
     all_models,
+    gap_fill_enabled,
     build_llm_config,
     forecaster_plan,
     research_sources,
@@ -717,6 +718,7 @@ class FallTemplateBot2026(ForecastBot):
 
 _FORECASTER: contextvars.ContextVar[str] = contextvars.ContextVar("forecaster", default="claude")
 MC_PROBABILITY_FLOOR = 0.01
+GAP_FILL_RESEARCH_CHARS = 40000
 
 # Distribution questions: the template asks for 6 percentiles (10..90). Past top bots asked for
 # more points incl. tails; forecasting-tools interpolates the CDF linearly between them and the
@@ -806,6 +808,7 @@ class GuardedBot(FallTemplateBot2026):
 
     # ------------------------------------------------------------------ research
     research_sources: tuple[str, ...] = ("asknews",)
+    gap_fill: bool = False
     forecaster_plan: tuple[str, ...] = ("claude",)
 
     def _research_semaphore(self) -> asyncio.Semaphore:
@@ -864,8 +867,54 @@ class GuardedBot(FallTemplateBot2026):
         if source == "data":
             parser = self.get_llm("parser", "llm")
             return await research_sources_mod.data(question.question_text, question.resolution_criteria, parser.invoke)
+        if source == "resolution_pages":
+            parser = self.get_llm("parser", "llm")
+            return await research_sources_mod.resolution_pages(
+                question.question_text, question.resolution_criteria, question.fine_print,
+                question.background_info, parser.invoke)
         llm = self.get_llm("claude_researcher" if source == "claude_web" else "gpt_researcher", "llm")
         return await llm.invoke(self._web_research_prompt(question))
+
+    @staticmethod
+    def _gap_fill_prompt(question: MetaculusQuestion, research: str) -> str:
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        closes = getattr(question, "close_time", None)
+        resolves = getattr(question, "scheduled_resolution_time", None)
+        if len(research) > GAP_FILL_RESEARCH_CHARS:
+            research = research[:GAP_FILL_RESEARCH_CHARS] + "\n[... research truncated ...]"
+        return clean_indents(
+            f"""
+            You are the fact-checker of a professional superforecaster. Today is {today} (UTC).
+            Below is a forecasting question and the research collected so far by several tools.
+            Do not give a probability yourself.
+
+            Question: {question.question_text}
+            Question closes: {closes}; scheduled resolution: {resolves}
+
+            Resolution criteria:
+            {question.resolution_criteria}
+
+            Fine print:
+            {question.fine_print}
+
+            Research so far:
+            <<<
+            {research}
+            >>>
+
+            Step 1: identify the 2-4 facts that would most change the forecast and are MISSING, STALE
+            (older than the latest possible update) or CONFLICTING between sources above. Always include
+            the latest value/status of the exact resolution source if it is not clearly established, and
+            any event scheduled before the resolution date.
+            Step 2: use web search to settle each of them.
+            Report under 400 words, one short paragraph per gap: the gap, what you found (with dates and
+            sources), and which earlier claim it confirms or corrects. Say plainly when a gap stays open.
+            """
+        )
+
+    async def _gap_fill(self, question: MetaculusQuestion, research: str) -> str:
+        llm = self.get_llm("gpt_researcher", "llm")
+        return await llm.invoke(self._gap_fill_prompt(question, research))
 
     async def run_research(self, question: MetaculusQuestion) -> str:
         """Run every configured source in parallel; a failing source never fails the question."""
@@ -874,6 +923,7 @@ class GuardedBot(FallTemplateBot2026):
             "claude_web": "Web research (Claude)", "gpt_web": "Web research (GPT)", "asknews": "News (AskNews)",
             "tavily": "News search results (Tavily)", "exa": "Web search results (Exa)",
             "markets": "Prediction markets", "data": "Official data",
+            "resolution_pages": "Resolution source pages (read directly)",
         }
         async with self._research_semaphore():
             results = await asyncio.gather(
@@ -893,6 +943,21 @@ class GuardedBot(FallTemplateBot2026):
                 continue
             if result and result.strip():
                 sections.append(f"## {titles[source]}\n{result.strip()}")
+        if self.gap_fill and sections:
+            self._guard(f"gap-fill research for {question.page_url}")
+            # Second pass: settle the facts the first pass left missing, stale or contradictory.
+            try:
+                follow_up = await self._gap_fill(question, "\n\n".join(sections))
+            except BudgetExceeded:
+                raise
+            except Exception as exc:  # degrade, don't fail the question
+                logger.warning("Gap-fill research failed for %s (%s)", question.page_url, type(exc).__name__)
+                follow_up = ""
+                if self.budget_guard is not None:
+                    self.budget_guard.note_research_failure()
+            print(f"Gap-fill research for {question.page_url}: {len(follow_up or '')} chars")
+            if follow_up and follow_up.strip():
+                sections.append(f"## Follow-up research on gaps and conflicts (GPT)\n{follow_up.strip()}")
         return "\n\n".join(sections)
 
     # ------------------------------------------------------------- loss guards
@@ -1128,6 +1193,7 @@ def run(run_mode: str) -> int:
         research_count, _unused = config_counts()
         plan = forecaster_plan()  # one prediction per entry, median-aggregated
         sources = research_sources()
+        gap_fill = gap_fill_enabled()
         gpt_effort = gpt_reasoning_effort()
         # Start on the key slots the previous run this month ended on (slot 1 at month start).
         # An explicit CLAUDE_KEY_ORDER / GPT_KEY_ORDER always starts on its first key: earlier runs
@@ -1189,6 +1255,7 @@ def run(run_mode: str) -> int:
     bot.budget_guard = guard
     bot.forecaster_plan = tuple(plan)
     bot.research_sources = tuple(sources)
+    bot.gap_fill = gap_fill
 
     client = MetaculusClient()
     forecast_reports: list = []
