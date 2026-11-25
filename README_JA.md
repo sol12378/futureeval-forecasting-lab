@@ -57,7 +57,8 @@ GitHub Actionsのジョブが失敗すると、リポジトリ所有者にメー
 | Secret（代替） | `ASKNEWS_CLIENT_ID` / `ASKNEWS_SECRET` | AskNewsのOAuth方式。`ASKNEWS_API_KEY` と両方ある場合はこちらが優先 |
 | Variable | `ENABLE_LIVE_FORECASTS` | テストに合格してから `true` にする |
 | Variable（任意） | `PREDICTIONS_PER_RESEARCH_REPORT` | 本番の予測回数。既定は3、最大5 |
-| Variable（任意） | `CLAUDE_MONTHLY_BUDGET_PER_KEY_USD` / `GPT_MONTHLY_BUDGET_PER_KEY_USD` | キー1本あたりの月上限。既定は200 / 100 |
+| Variable（任意） | `CLAUDE_MONTHLY_BUDGET_PER_KEY_USD` / `GPT_MONTHLY_BUDGET_PER_KEY_USD` | キー1本あたりの月上限。既定は200 / 100。`400,200` のようにキーごとにも指定可 |
+| Variable（任意） | `CLAUDE_KEY_ORDER` / `GPT_KEY_ORDER` | キーを使う順番。`2,1` = キー2を先に使い、切れたらキー1。`2` = キー2だけ。未設定は 1→2。Secretを入れ替えずに切り替えられる |
 | Variable（任意） | `BUDGET_SOFT_RATIO` / `BUDGET_HARD_RATIO` / `RUN_COST_CAP_USD` | 既定は0.70 / 0.90 / 30 |
 | Variable（任意） | `CLAUDE_MODEL` / `GPT_MODEL` | モデルの差し替え（litellmで料金を計算できるモデルに限る） |
 | Variable（任意） | `GPT_REASONING_EFFORT` | GPTの推論量。既定 `low`（none/low/medium/high/xhigh/max） |
