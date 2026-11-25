@@ -152,7 +152,9 @@ class ResolutionPageTests(unittest.TestCase):
                 if "cdc.gov" in str(request.url):
                     return httpx.Response(200, text="Title: Measles\n" + "Total cases 5,907 as of Nov 20. " * 10)
                 return httpx.Response(429, text="rate limited")
-            if request.url.host == "example.org":
+            if request.headers.get("host") == "example.org":
+                self.assertEqual(request.url.host, "93.184.216.34")  # pinned to the checked IP
+                self.assertEqual(request.headers.get("accept-encoding"), "identity")
                 return httpx.Response(200, headers={"content-type": "text/html"},
                                       text="<p>" + "Backup table row 12 " * 20 + "</p>")
             return httpx.Response(404)
@@ -198,6 +200,8 @@ class ResolutionPageTests(unittest.TestCase):
             with self.assertRaises(rs.SourceError, msg=url):
                 asyncio.run(run(url))
         self.assertFalse(any("169.254.169.254" in h and "jina" not in h for h in hits))
+        # the public hop was sent to the pinned IP with the original Host header
+        self.assertIn("http://93.184.216.34/redirect", hits)
 
     def test_no_urls_no_calls(self):
         async def extract(prompt):

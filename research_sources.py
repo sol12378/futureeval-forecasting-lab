@@ -349,8 +349,12 @@ def html_to_text(raw: str) -> str:
 MAX_REDIRECTS = 3
 
 
-async def _assert_public_host(url: str) -> None:
-    """Refuse non-http(s) URLs and hosts resolving to loopback/private/link-local/reserved addresses."""
+MAX_PAGE_BYTES = 2_000_000
+FETCH_DEADLINE_S = 45.0
+
+
+async def _resolve_public(url: str) -> tuple[str, str, str]:
+    """(host, pinned IP, Host header) for an http(s) URL whose every address is public; else raise."""
     parsed = urlparse(url)
     host = (parsed.hostname or "").rstrip(".").lower()
     if parsed.scheme not in ("http", "https") or not host:
@@ -359,19 +363,19 @@ async def _assert_public_host(url: str) -> None:
         infos = await asyncio.get_running_loop().getaddrinfo(host, parsed.port or None, type=socket.SOCK_STREAM)
     except OSError as exc:
         raise SourceError("Resolution page: DNS failure") from exc
-    for info in infos:
-        addr = ipaddress.ip_address(info[4][0].split("%", 1)[0])
-        if not addr.is_global or addr.is_multicast:
-            raise SourceError("Resolution page: non-public address refused")
+    addrs = [ipaddress.ip_address(info[4][0].split("%", 1)[0]) for info in infos]
+    if not addrs or any(not a.is_global or a.is_multicast for a in addrs):
+        raise SourceError("Resolution page: non-public address refused")
+    host_header = host if parsed.port is None else f"{host}:{parsed.port}"
+    return host, str(addrs[0]), host_header
 
 
-MAX_PAGE_BYTES = 2_000_000
-FETCH_DEADLINE_S = 45.0
-
-
-async def _read_capped(client: httpx.AsyncClient, url: str) -> tuple[int, dict, str, httpx.URL]:
+async def _read_capped(client: httpx.AsyncClient, url: str, headers: dict | None = None,
+                       extensions: dict | None = None) -> tuple[int, dict, str, httpx.URL]:
     """Stream a GET (no redirects) and stop after MAX_PAGE_BYTES."""
-    async with client.stream("GET", url, follow_redirects=False) as resp:
+    request = client.build_request("GET", url, headers=headers, extensions=extensions)
+    resp = await client.send(request, stream=True, follow_redirects=False)
+    try:
         chunks, size = [], 0
         async for chunk in resp.aiter_bytes():
             chunks.append(chunk)
@@ -380,16 +384,24 @@ async def _read_capped(client: httpx.AsyncClient, url: str) -> tuple[int, dict, 
                 break
         encoding = resp.charset_encoding or "utf-8"
         return resp.status_code, dict(resp.headers), b"".join(chunks).decode(encoding, "replace"), resp.url
+    finally:
+        await resp.aclose()
 
 
 async def _safe_get(client: httpx.AsyncClient, url: str) -> tuple[int, dict, str]:
-    """GET with every hop (including redirects) checked to point at a public address."""
+    """GET that connects only to a checked public IP (pinned: no DNS rebinding between check and
+    connect), re-checks every redirect hop, and asks for uncompressed bodies (no decompression bombs)."""
     for _ in range(MAX_REDIRECTS + 1):
-        await _assert_public_host(url)
-        status, headers, text, final_url = await _read_capped(client, url)
+        host, ip, host_header = await _resolve_public(url)
+        pinned = httpx.URL(url).copy_with(host=ip)
+        status, headers, text, _final = await _read_capped(
+            client, str(pinned),
+            headers={"Host": host_header, "Accept-Encoding": "identity"},
+            extensions={"sni_hostname": host},
+        )
         location = headers.get("location")
         if status in (301, 302, 303, 307, 308) and location:
-            url = str(final_url.join(location))
+            url = str(httpx.URL(url).join(location))
             continue
         return status, headers, text
     raise SourceError("Resolution page: too many redirects")
