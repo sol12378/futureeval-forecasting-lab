@@ -31,7 +31,7 @@ from forecast_config import (
     model_names,
     unpriced_models,
 )
-from api_keys import KeyPool
+from api_keys import KeyPool, configured_key_order
 
 import dotenv
 
@@ -1130,8 +1130,13 @@ def run(run_mode: str) -> int:
         sources = research_sources()
         gpt_effort = gpt_reasoning_effort()
         # Start on the key slots the previous run this month ended on (slot 1 at month start).
+        # An explicit CLAUDE_KEY_ORDER / GPT_KEY_ORDER always starts on its first key: earlier runs
+        # may have used another order, and an empty key costs only one rejected call to skip.
         start_slots = load_last_key_slots(guard.ledger_dir, guard.month)
-        key_pools = {p: KeyPool(p, start_slot=start_slots[p]) for p in ("anthropic", "openai")}
+        key_pools = {}
+        for p in ("anthropic", "openai"):
+            order = configured_key_order(p)
+            key_pools[p] = KeyPool(p, start_slot=order[0] if order else start_slots[p], order=order)
     except (LedgerError, ValueError) as exc:
         print(f"BUDGET_CONFIG_ERROR: {exc}")
         return EXIT_CONFIG

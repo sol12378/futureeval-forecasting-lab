@@ -235,6 +235,32 @@ class BudgetGuardTests(unittest.TestCase):
             with self.assertRaises(ValueError, msg=bad):
                 self.guard(GPT_MONTHLY_BUDGET_PER_KEY_USD=bad)
 
+    def test_key_order_budgets_and_rotation(self):
+        from api_keys import KeyPool
+
+        # Claude key 1 spent $41 earlier this month, then the owner moved to key 2 only.
+        write(self.ledger, "2026-11", "a.json",
+              {"cost_usd": {"anthropic": 41.0}, "cost_by_key_slot": {"anthropic": {"1": 41.0}}})
+        g = self.guard(CLAUDE_MONTHLY_BUDGET_PER_KEY_USD="400,200", GPT_MONTHLY_BUDGET_PER_KEY_USD="180,100",
+                       RUN_COST_CAP_USD="1000")
+        env = {"ANTHROPIC_API_KEY": "a1", "ANTHROPIC_API_KEY_2": "a2", "OPENAI_API_KEY": "o1", "OPENAI_API_KEY_2": "o2",
+               "CLAUDE_KEY_ORDER": "2", "GPT_KEY_ORDER": "2,1"}
+        pools = {"anthropic": KeyPool("anthropic", env), "openai": KeyPool("openai", env)}
+        with patch.dict(os.environ, {}):
+            g.attach_key_pools(pools)
+            self.assertEqual((g.capacity("anthropic"), g.capacity("openai")), (200.0, 280.0))
+            self.assertEqual(g.ratio("anthropic"), 0.0)  # key 1 spend no longer counts
+            self.assertEqual(g.level(), "ok")
+            g.assert_can_spend()
+            self.assertEqual((pools["anthropic"].slot, pools["openai"].slot), (2, 2))
+            g.add_cost("openai", 91.0)  # GPT key 2 at 91% -> rotate back to key 1
+            g.assert_can_spend()
+            self.assertEqual(pools["openai"].slot, 1)
+            self.assertEqual(g.cost_by_slot["openai"], {"2": 91.0})
+            g.add_cost("anthropic", 181.0)  # Claude key 2 at 90.5% and no other key -> stop
+            with self.assertRaises(BudgetExceeded):
+                g.assert_can_spend()
+
     def test_web_search_fees_are_added(self):
         from types import SimpleNamespace
 

@@ -107,3 +107,42 @@ class FailoverLlmTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class KeyOrderTests(unittest.TestCase):
+    ENV = {"ANTHROPIC_API_KEY": "a1", "ANTHROPIC_API_KEY_2": "a2", "OPENAI_API_KEY": "o1", "OPENAI_API_KEY_2": "o2"}
+
+    def test_key2_first_then_key1(self):
+        from api_keys import configured_key_order
+
+        env = dict(self.ENV, GPT_KEY_ORDER="2,1")
+        self.assertEqual(configured_key_order("openai", env), (2, 1))
+        self.assertIsNone(configured_key_order("anthropic", env))
+        pool = KeyPool("openai", env)
+        with patch.dict(os.environ, {}):
+            pool.activate()
+            self.assertEqual((pool.slots, pool.slot, os.environ["OPENAI_API_KEY"]), ((2, 1), 2, "o2"))
+            self.assertTrue(pool.mark_exhausted(2))
+            self.assertEqual((pool.slot, os.environ["OPENAI_API_KEY"]), (1, "o1"))
+            self.assertFalse(pool.mark_exhausted(1))
+            self.assertEqual(pool.switched_from, [2])
+
+    def test_single_key_order_excludes_the_other(self):
+        pool = KeyPool("anthropic", dict(self.ENV, CLAUDE_KEY_ORDER="2"))
+        self.assertEqual((pool.size, pool.slots, pool.slot), (1, (2,), 2))
+        self.assertFalse(pool.mark_exhausted(2))
+        # A missing secret is skipped even if it is named in the order.
+        pool = KeyPool("anthropic", {"ANTHROPIC_API_KEY": "a1", "CLAUDE_KEY_ORDER": "2,1"})
+        self.assertEqual(pool.slots, (1,))
+
+    def test_start_slot_follows_order(self):
+        pool = KeyPool("openai", self.ENV, start_slot=1, order=(2, 1))
+        self.assertEqual(pool.slot, 1)
+        self.assertFalse(pool.mark_exhausted(1))  # key 1 is last in this order
+
+    def test_bad_orders_rejected(self):
+        from api_keys import configured_key_order
+
+        for bad in ("3", "1,1", "a", "0", "2,1,2", ","):
+            with self.assertRaises(ValueError, msg=bad):
+                configured_key_order("anthropic", {"CLAUDE_KEY_ORDER": bad})

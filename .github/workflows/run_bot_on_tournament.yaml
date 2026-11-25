@@ -34,6 +34,8 @@ jobs:
       RESEARCH_REPORTS_PER_QUESTION: "1"
       CLAUDE_MONTHLY_BUDGET_PER_KEY_USD: ${{ vars.CLAUDE_MONTHLY_BUDGET_PER_KEY_USD || '200' }}
       GPT_MONTHLY_BUDGET_PER_KEY_USD: ${{ vars.GPT_MONTHLY_BUDGET_PER_KEY_USD || '100' }}
+      CLAUDE_KEY_ORDER: ${{ vars.CLAUDE_KEY_ORDER }} # e.g. '2,1' = key 2 first; empty = 1 then 2
+      GPT_KEY_ORDER: ${{ vars.GPT_KEY_ORDER }}
       BUDGET_SOFT_RATIO: ${{ vars.BUDGET_SOFT_RATIO || '0.70' }}
       BUDGET_HARD_RATIO: ${{ vars.BUDGET_HARD_RATIO || '0.90' }}
       RUN_COST_CAP_USD: ${{ vars.RUN_COST_CAP_USD || '30' }}

@@ -301,6 +301,7 @@ class BudgetGuard:
     cost_by_slot: dict[str, dict[str, float]] = field(default_factory=lambda: {p: {} for p in PROVIDERS})
     key_slot: Any = None  # callable(provider) -> active 1-based key slot
     key_counts: dict[str, int] = field(default_factory=lambda: {p: 1 for p in PROVIDERS})
+    key_slots: dict[str, tuple[int, ...]] = field(default_factory=lambda: {p: (1,) for p in PROVIDERS})
     key_pools: dict = field(default_factory=dict)
     questions: dict[str, dict] = field(default_factory=dict)
     started_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
@@ -332,7 +333,8 @@ class BudgetGuard:
     def attach_key_pools(self, pools: dict) -> None:
         """Use api_keys.KeyPool objects: per-key budgets, slot tracking and proactive switching."""
         self.key_pools = dict(pools)
-        self.key_counts = {p: max(1, pools[p].size) if p in pools else 1 for p in PROVIDERS}
+        self.key_slots = {p: (pools[p].slots or (pools[p].slot,)) if p in pools else (1,) for p in PROVIDERS}
+        self.key_counts = {p: len(self.key_slots[p]) for p in PROVIDERS}
         self.key_slot = lambda provider: pools[provider].slot if provider in pools else 1
 
     def install(self) -> None:
@@ -397,7 +399,7 @@ class BudgetGuard:
         return self.month_spend[provider] + self.run_spend[provider]
 
     def capacity(self, provider: str) -> float:
-        return sum(self.budgets[provider][: self.key_counts[provider]])
+        return sum(self.key_budget(provider, s) for s in self.key_slots[provider])
 
     def key_budget(self, provider: str, slot: int) -> float:
         return self.budgets[provider][slot - 1]
@@ -414,15 +416,15 @@ class BudgetGuard:
         return spent / budget
 
     def ratio(self, provider: str) -> float:
-        """Spend against the combined budget of all configured keys (drives cheap mode)."""
+        """Spend on the keys in use against their combined budget (drives cheap mode)."""
         capacity = self.capacity(provider)
-        spent = self.total_spend(provider)
+        spent = sum(self.slot_spend(provider, s) for s in self.key_slots[provider])
         if capacity <= 0 or not math.isfinite(spent):
             return float("inf")  # fail closed
         return spent / capacity
 
     def provider_exhausted(self, provider: str) -> bool:
-        slots = range(1, self.key_counts[provider] + 1)
+        slots = self.key_slots[provider]
         return all(self.slot_ratio(provider, s) >= self.hard_ratio for s in slots) or not math.isfinite(
             self.total_spend(provider)
         )
@@ -454,7 +456,7 @@ class BudgetGuard:
             if self.provider_exhausted(provider) or self.slot_ratio(provider, self._slot(provider)) >= self.hard_ratio:
                 raise BudgetExceeded(
                     f"{PROVIDER_LABEL[provider]} keys reached {self.hard_ratio:.0%} of their "
-                    f"per-key budgets {self.budgets[provider][: self.key_counts[provider]]} "
+                    f"per-key budgets { {s: self.key_budget(provider, s) for s in self.key_slots[provider]} } "
                     f"(month ${self.total_spend(provider):.2f}); refusing {what}"
                 )
         if self.run_total() >= self.run_cost_cap:
@@ -492,7 +494,7 @@ class BudgetGuard:
             )
             per_key = ", ".join(
                 f"key{s} ${self.slot_spend(p, s):.2f}/${self.key_budget(p, s):.0f} ({self.slot_ratio(p, s):.0%})"
-                for s in range(1, self.key_counts[p] + 1)
+                for s in self.key_slots[p]
             )
             lines.append(f"    active key {self._slot(p)}; month per key: {per_key}")
         lines.append(
