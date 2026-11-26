@@ -1,0 +1,69 @@
+{
+  "schema": 1,
+  "run_id": "45816217584",
+  "run_attempt": "1",
+  "mode": "tournament",
+  "started_at": "2026-11-26T12:04:28.443863+00:00",
+  "finished_at": "2026-11-26T12:06:05.801842+00:00",
+  "cost_usd": {
+    "anthropic": 0.947032,
+    "openai": 0.340169
+  },
+  "unknown_provider_cost_usd": 0.0,
+  "unpriced_calls": 0,
+  "research_failures": 0,
+  "asknews_calls": 0,
+  "key_slot": {
+    "anthropic": 2,
+    "openai": 2
+  },
+  "cost_by_key_slot": {
+    "anthropic": {
+      "2": 0.947032
+    },
+    "openai": {
+      "2": 0.340169
+    }
+  },
+  "questions": [
+    {
+      "key": "46754:47011",
+      "url": "https://www.metaculus.com/questions/46754",
+      "status": "submitted"
+    }
+  ],
+  "models": {
+    "forecaster": "anthropic/claude-opus-5-5",
+    "parser": "openai/gpt-6.2-sol"
+  },
+  "keys_switched_from": {
+    "anthropic": [],
+    "openai": []
+  },
+  "asknews": true,
+  "predictions_per_report": 8,
+  "forecaster_plan": [
+    "claude",
+    "claude",
+    "claude",
+    "claude",
+    "gpt",
+    "gpt",
+    "gpt",
+    "gpt"
+  ],
+  "research_sources": [
+    "claude_web",
+    "gpt_web",
+    "tavily",
+    "exa",
+    "markets",
+    "data",
+    "resolution_pages"
+  ],
+  "notes": [
+    "FutureEval (33121): open=1, already_forecasted=0, to_forecast=1, ledger_blocked=0",
+    "MiniBench (minibench): open=0, already_forecasted=0, to_forecast=0, ledger_blocked=0",
+    "Post-check OK: all 1 targeted question(s) now show a forecast."
+  ]
+}
